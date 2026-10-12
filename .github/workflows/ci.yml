@@ -1,0 +1,31 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: collabcode
+          POSTGRES_PASSWORD: collabcode
+          POSTGRES_DB: collabcode
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U collabcode" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://collabcode:collabcode@localhost:5432/collabcode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version comes from "packageManager" in package.json
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - name: Apply migrations (needed by the API integration tests)
+        run: pnpm --filter @collabcode/db exec prisma migrate deploy
+      - run: pnpm test

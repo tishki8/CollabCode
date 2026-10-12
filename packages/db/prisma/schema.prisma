@@ -1,0 +1,354 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  EDITOR
+  COMMENTER
+  VIEWER
+}
+
+// A share link can never grant OWNER (enforced by the type itself).
+enum LinkRole {
+  EDITOR
+  COMMENTER
+  VIEWER
+}
+
+enum Language {
+  PYTHON
+  JAVASCRIPT
+  JAVA
+  CPP
+}
+
+enum NodeType {
+  FILE
+  FOLDER
+}
+
+enum ReqStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+enum SuggStatus {
+  OPEN
+  ACCEPTED
+  REJECTED
+  STALE // anchored text was deleted
+}
+
+enum RunStatus {
+  QUEUED
+  COMPILING
+  RUNNING
+  SUCCEEDED
+  COMPILE_ERROR
+  RUNTIME_ERROR
+  COMPILE_TIMEOUT
+  RUN_TIMEOUT
+  FAILED
+}
+
+// ───────────── Identity ─────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  isGuest       Boolean   @default(false)
+  githubLogin   String?
+  githubId      Int?
+  createdAt     DateTime  @default(now())
+
+  accounts      Account[]
+  sessions      Session[]
+  guestSessions GuestSession[]
+  memberships   ProjectMember[]
+}
+
+// Auth.js adapter tables. NOTE: OAuth tokens are stored as-is for now; they are
+// encrypted at rest before the GitHub export (Phase 7) starts using them.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  access_token      String?
+  refresh_token     String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// Guest cookie holds the raw token; only its hash is stored.
+model GuestSession {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ───────────── Projects & files ─────────────
+
+model Project {
+  id        String   @id @default(cuid())
+  name      String
+  language  Language
+  entryFile String? // null -> language default (main.py / index.js / Main.java / main.cpp)
+  ownerId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members     ProjectMember[]
+  files       FileNode[]
+  shareLinks  ShareLink[]
+  checkpoints Checkpoint[]
+  runs        Run[]
+  exports     GitHubExport[]
+}
+
+model ProjectMember {
+  projectId      String
+  userId         String
+  role           Role
+  // Palette colour; the allocator prefers unused colours but wraps around when a
+  // project has more members than palette entries, so it is NOT unique.
+  color          String
+  initials       String
+  viaShareLinkId String?
+  joinedAt       DateTime @default(now())
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([userId])
+}
+
+model FileNode {
+  id        String     @id @default(cuid())
+  projectId String
+  parentId  String?
+  name      String
+  type      NodeType
+  createdAt DateTime   @default(now())
+  deletedAt DateTime? // soft delete: history, blame and replay keep working
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent    FileNode?  @relation("Tree", fields: [parentId], references: [id])
+  children  FileNode[] @relation("Tree")
+
+  // Sibling-name uniqueness is a partial unique index in the migration SQL
+  // (Prisma cannot express it): UNIQUE (projectId, COALESCE(parentId, ''), name) WHERE deletedAt IS NULL
+  @@index([projectId, parentId])
+}
+
+// ───────────── Collaboration & event sourcing ─────────────
+
+model DocSnapshot {
+  fileId    String   @id
+  state     Bytes
+  updatedAt DateTime @updatedAt
+}
+
+model DocEvent {
+  id         BigInt   @id @default(autoincrement())
+  fileId     String
+  userId     String
+  clientId   BigInt
+  clockStart Int
+  clockEnd   Int
+  update     Bytes
+  added      Int
+  removed    Int
+  origin     String   @default("edit") // "edit" | "suggestion-accept" | "restore"
+  createdAt  DateTime @default(now())
+
+  @@index([fileId, createdAt])
+  @@index([fileId, clientId, clockStart])
+  @@index([userId, createdAt])
+}
+
+model YClient {
+  fileId    String
+  clientId  BigInt
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@id([fileId, clientId])
+}
+
+// ───────────── Sharing ─────────────
+
+model ShareLink {
+  id               String        @id @default(cuid())
+  projectId        String
+  tokenHash        String        @unique
+  role             LinkRole
+  requiresApproval Boolean       @default(false)
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  createdById      String
+  createdAt        DateTime      @default(now())
+  project          Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requests         JoinRequest[]
+}
+
+model JoinRequest {
+  id          String    @id @default(cuid())
+  shareLinkId String
+  userId      String
+  status      ReqStatus @default(PENDING)
+  decidedById String?
+  decidedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  shareLink   ShareLink @relation(fields: [shareLinkId], references: [id], onDelete: Cascade)
+
+  @@unique([shareLinkId, userId])
+}
+
+// ───────────── Review tools ─────────────
+
+model Suggestion {
+  id           String     @id @default(cuid())
+  fileId       String
+  authorId     String
+  startAnchor  Bytes // Y.encodeRelativePosition, never raw line/column
+  endAnchor    Bytes
+  originalText String
+  newText      String
+  status       SuggStatus @default(OPEN)
+  resolvedById String?
+  resolvedAt   DateTime?
+  createdAt    DateTime   @default(now())
+
+  @@index([fileId, status])
+}
+
+model CommentThread {
+  id           String    @id @default(cuid())
+  fileId       String
+  startAnchor  Bytes
+  endAnchor    Bytes
+  createdById  String
+  createdAt    DateTime  @default(now())
+  resolvedAt   DateTime?
+  resolvedById String?
+  comments     Comment[]
+
+  @@index([fileId])
+}
+
+model Comment {
+  id        String        @id @default(cuid())
+  threadId  String
+  authorId  String
+  body      String
+  createdAt DateTime      @default(now())
+  editedAt  DateTime?
+  thread    CommentThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+}
+
+model Checkpoint {
+  id          String             @id @default(cuid())
+  projectId   String
+  name        String
+  createdById String
+  createdAt   DateTime           @default(now())
+  project     Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  files       CheckpointFile[]
+  exports     CheckpointExport[]
+}
+
+model CheckpointFile {
+  checkpointId String
+  fileId       String
+  path         String
+  state        Bytes
+  lastEventId  BigInt
+  checkpoint   Checkpoint @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+
+  @@id([checkpointId, fileId])
+}
+
+// ───────────── Execution ─────────────
+
+model Run {
+  id            String    @id @default(cuid())
+  projectId     String
+  userId        String
+  entryFile     String
+  status        RunStatus @default(QUEUED)
+  stdin         String?
+  compileOutput String?
+  stdout        String?
+  stderr        String?
+  exitCode      Int?
+  compileMs     Int?
+  runMs         Int?
+  truncated     Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  finishedAt    DateTime?
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}
+
+// ───────────── Export ─────────────
+
+model GitHubExport {
+  id          String             @id @default(cuid())
+  projectId   String
+  repoOwner   String
+  repoName    String
+  branch      String             @default("main")
+  createdById String
+  createdAt   DateTime           @default(now())
+  project     Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  commits     CheckpointExport[]
+
+  @@unique([projectId, repoOwner, repoName, branch])
+}
+
+model CheckpointExport {
+  exportId     String
+  checkpointId String
+  commitSha    String
+  exportedAt   DateTime     @default(now())
+  export       GitHubExport @relation(fields: [exportId], references: [id], onDelete: Cascade)
+  checkpoint   Checkpoint   @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+
+  @@id([exportId, checkpointId])
+}
