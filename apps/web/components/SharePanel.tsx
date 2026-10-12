@@ -67,8 +67,13 @@ export function SharePanel({ projectId }: { projectId: string }) {
 
   return (
     <section aria-label="Sharing">
-      <button className={btn} aria-expanded={open} aria-controls="share-body" onClick={() => setOpen((o) => !o)}>
-        Share
+      <button
+        className="w-full rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800"
+        aria-expanded={open}
+        aria-controls="share-body"
+        onClick={() => setOpen((o) => !o)}
+      >
+        Share project
       </button>
       {open && (
         <div id="share-body" className="mt-3 flex flex-col gap-3" data-testid="share-body">

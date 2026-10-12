@@ -57,11 +57,19 @@ export function ProjectWorkspace({
   return (
     <main id="main" className="grid h-[calc(100vh-3.5rem)] grid-cols-[19rem_1fr]">
       <aside aria-label="Project sidebar" className="flex flex-col gap-6 overflow-y-auto border-r border-slate-200 p-4 dark:border-slate-800">
-        <div>
-          <h1 className="text-lg font-semibold">{project.name}</h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400">
-            {LANGUAGE_INFO[project.language].label} · you are {project.role.toLowerCase()}
-          </p>
+        <div className="flex flex-col gap-3">
+          <div>
+            <h1 className="text-lg font-semibold">{project.name}</h1>
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              {LANGUAGE_INFO[project.language].label} · you are {project.role.toLowerCase()}
+            </p>
+          </div>
+          {/* Sharing is the main way to get collaborators in, so it lives at the top, not the bottom. */}
+          {can(project.role, "share:manage") ? (
+            <SharePanel projectId={project.id} />
+          ) : (
+            <p className="text-xs text-slate-600 dark:text-slate-400">Only the project owner can create share links.</p>
+          )}
         </div>
         <FileTree
           projectId={project.id}
@@ -72,7 +80,6 @@ export function ProjectWorkspace({
           onNodesChange={setNodes}
         />
         <PresencePanel projectId={project.id} currentUserId={currentUserId} activeFileId={active?.id ?? null} nodes={nodes} />
-        {can(project.role, "share:manage") && <SharePanel projectId={project.id} />}
       </aside>
       <section aria-label="Editor" className="min-w-0">
         {active ? (
