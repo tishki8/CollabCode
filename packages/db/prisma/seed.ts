@@ -1,18 +1,21 @@
-// Idempotent seed: two demo users, one demo project, and long-lived DEV sessions
-// so the app can be tried without configuring OAuth (see /api/dev-login in apps/web,
-// which is only enabled when DEV_LOGIN=true). Never run this against production.
+// Idempotent seed: two demo users and one demo project. The app can be tried without
+// configuring OAuth through /api/dev-login in apps/web (only when DEV_LOGIN=true), which
+// creates a session for these users on demand. Never run this against production.
 import { PrismaClient } from "@prisma/client";
-import { AUTHOR_PALETTE, DEV_SESSION_TOKENS, initialsOf } from "@collabcode/shared";
+import { AUTHOR_PALETTE, DEV_USER_EMAILS, initialsOf } from "@collabcode/shared";
 
 const prisma = new PrismaClient();
 
 const DEMO_USERS = [
-  { key: "alice", name: "Alice Demo", email: "alice@example.com", githubLogin: "alice-demo" },
-  { key: "bob", name: "Bob Demo", email: "bob@example.com", githubLogin: "bob-demo" },
+  { key: "alice", name: "Alice Demo", email: DEV_USER_EMAILS.alice!, githubLogin: "alice-demo" },
+  { key: "bob", name: "Bob Demo", email: DEV_USER_EMAILS.bob!, githubLogin: "bob-demo" },
 ] as const;
 
 async function main() {
   if (process.env.NODE_ENV === "production") throw new Error("Refusing to seed demo data in production");
+
+  // Earlier versions seeded sessions with fixed, publicly known tokens. Remove them.
+  await prisma.session.deleteMany({ where: { sessionToken: { in: ["dev-session-token-alice", "dev-session-token-bob"] } } });
 
   const users: Record<string, string> = {};
   for (const u of DEMO_USERS) {
@@ -22,15 +25,6 @@ async function main() {
       create: { name: u.name, email: u.email, githubLogin: u.githubLogin },
     });
     users[u.key] = user.id;
-    await prisma.session.upsert({
-      where: { sessionToken: DEV_SESSION_TOKENS[u.key]! },
-      update: { expires: new Date(Date.now() + 365 * 864e5) },
-      create: {
-        sessionToken: DEV_SESSION_TOKENS[u.key]!,
-        userId: user.id,
-        expires: new Date(Date.now() + 365 * 864e5),
-      },
-    });
   }
 
   const DEMO_ID = "demo-project";

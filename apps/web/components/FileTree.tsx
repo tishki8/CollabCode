@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { can, type FileNodeDto, type Role } from "@collabcode/shared";
 import { api } from "@/lib/client-api";
 
@@ -13,8 +13,25 @@ type Pending =
 const sortNodes = (a: FileNodeDto, b: FileNodeDto) =>
   a.type === b.type ? a.name.localeCompare(b.name) : a.type === "FOLDER" ? -1 : 1;
 
-export function FileTree({ projectId, role, initialNodes }: { projectId: string; role: Role; initialNodes: FileNodeDto[] }) {
+export function FileTree({
+  projectId,
+  role,
+  initialNodes,
+  activeFileId = null,
+  onOpenFile,
+  onNodesChange,
+}: {
+  projectId: string;
+  role: Role;
+  initialNodes: FileNodeDto[];
+  /** The file currently open in the editor (highlighted). */
+  activeFileId?: string | null;
+  onOpenFile?: (node: FileNodeDto) => void;
+  /** Called whenever the tree changes, so the page can react (e.g. a deleted file closes). */
+  onNodesChange?: (nodes: FileNodeDto[]) => void;
+}) {
   const [nodes, setNodes] = useState(initialNodes);
+  useEffect(() => onNodesChange?.(nodes), [nodes, onNodesChange]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [pending, setPending] = useState<Pending>(null);
@@ -84,10 +101,11 @@ export function FileTree({ projectId, role, initialNodes }: { projectId: string;
             <li key={n.id}>
               <button
                 type="button"
-                aria-current={isSelected ? "true" : undefined}
+                aria-current={n.id === activeFileId ? "page" : isSelected ? "true" : undefined}
                 aria-expanded={n.type === "FOLDER" ? isOpen : undefined}
                 onClick={() => {
                   setSelectedId(n.id);
+                  if (n.type === "FILE") onOpenFile?.(n);
                   if (n.type === "FOLDER") {
                     setCollapsed((c) => {
                       const next = new Set(c);
@@ -98,7 +116,7 @@ export function FileTree({ projectId, role, initialNodes }: { projectId: string;
                   }
                 }}
                 className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-800 ${
-                  isSelected ? "bg-blue-100 font-semibold dark:bg-blue-950" : ""
+                  n.id === activeFileId ? "bg-blue-200 font-semibold dark:bg-blue-900" : isSelected ? "bg-blue-100 dark:bg-blue-950" : ""
                 }`}
               >
                 <span aria-hidden="true">{n.type === "FOLDER" ? (isOpen ? "▾" : "▸") : "·"}</span>

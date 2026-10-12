@@ -1,6 +1,7 @@
-// Fixed session tokens for the seeded demo users. Used by the seed script and by the
-// web app's dev-login route (only enabled when DEV_LOGIN=true). Not secret, not for production.
-export const DEV_SESSION_TOKENS: Record<string, string> = {
-  alice: "dev-session-token-alice",
-  bob: "dev-session-token-bob",
+// The seeded demo users, selectable through the development-only login (/api/dev-login,
+// enabled only when DEV_LOGIN=true and never in production). Each dev login creates a fresh
+// random session for the chosen user, so signing out in one window never affects another.
+export const DEV_USER_EMAILS: Record<string, string> = {
+  alice: "alice@example.com",
+  bob: "bob@example.com",
 };

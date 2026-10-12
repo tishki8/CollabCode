@@ -8,3 +8,5 @@ coverage
 playwright-report
 test-results
 .turbo
+apps/web/public/monaco
+dump.rdb

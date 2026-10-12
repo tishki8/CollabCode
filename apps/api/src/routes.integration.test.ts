@@ -37,7 +37,7 @@ run("REST API (integration)", () => {
     });
 
   beforeAll(async () => {
-    app = await buildApp({ prisma, webOrigin: WEB });
+    app = await buildApp({ prisma, webOrigin: WEB, collabSecret: "x".repeat(32), collabPublicUrl: "ws://localhost:1234" });
     await Promise.all(["owner", "editor", "viewer", "outsider"].map(makeUser));
   });
 
