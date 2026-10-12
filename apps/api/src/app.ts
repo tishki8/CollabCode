@@ -5,14 +5,21 @@ import rateLimit from "@fastify/rate-limit";
 import { ZodError, type ZodType } from "zod";
 import type { PrismaClient } from "@collabcode/db";
 import { HttpError } from "./errors";
-import { requireUser, type AuthUser } from "./plugins/auth";
+import { createHash } from "node:crypto";
+import { requireUser, sessionTokenOf, type AuthUser } from "./plugins/auth";
 import { projectRoutes } from "./routes/projects";
 import { fileRoutes } from "./routes/files";
+import { shareLinkRoutes } from "./routes/share-links";
+import { collabRoutes } from "./routes/collab";
 
 export interface AppDeps {
   prisma: PrismaClient;
   /** The web app's origin, e.g. http://localhost:3000. Used for the CSRF check. */
   webOrigin: string;
+  /** Secret shared with the collab server for signing collab tokens (HS256). */
+  collabSecret: string;
+  /** WebSocket URL of the collab server as seen from the browser. */
+  collabPublicUrl: string;
   logger?: boolean;
 }
 
@@ -31,7 +38,16 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(helmet);
   await app.register(cookie);
   // In-memory counters for now; moves to the Redis store when Redis is wired in (Phase 6).
-  await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
+  // Limits are counted per signed-in session, not per IP: people on the same office/campus
+  // network (a whole team) must not throttle each other. Anonymous requests fall back to the IP.
+  await app.register(rateLimit, {
+    max: 600,
+    timeWindow: "1 minute",
+    keyGenerator: (req) => {
+      const token = sessionTokenOf(req);
+      return token ? `session:${createHash("sha256").update(token).digest("hex")}` : `ip:${req.ip}`;
+    },
+  });
 
   // CSRF defence in depth (on top of SameSite=Lax cookies): browsers always send Origin
   // on cross-site writes, so a write whose Origin is not our web app is rejected.
@@ -70,6 +86,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.get("/health", async () => ({ status: "ok" }));
   await app.register(projectRoutes(ctx), { prefix: "/projects" });
   await app.register(fileRoutes(ctx));
+  await app.register(shareLinkRoutes(ctx));
+  await app.register(collabRoutes(ctx, { secret: deps.collabSecret, publicUrl: deps.collabPublicUrl }));
 
   return app;
 }

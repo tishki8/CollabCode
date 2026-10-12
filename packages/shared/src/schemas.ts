@@ -78,3 +78,45 @@ export interface ApiError {
   error: string;
   details?: unknown;
 }
+
+// ---------- sharing & collaboration ----------
+
+/** Roles a share link can grant in this phase (commenter arrives with the review tools). */
+export const SHARE_LINK_ROLES = ["VIEWER", "EDITOR"] as const;
+
+export const createShareLinkInput = z.object({ role: z.enum(SHARE_LINK_ROLES) });
+export type CreateShareLinkInput = z.infer<typeof createShareLinkInput>;
+
+/** The secret part of a share link URL: url-safe base64, no other characters. */
+export const shareTokenSchema = z
+  .string()
+  .min(20)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/, "Invalid link");
+export const joinShareLinkInput = z.object({ token: shareTokenSchema });
+
+export interface ShareLinkDto {
+  id: string;
+  role: "VIEWER" | "EDITOR" | "COMMENTER";
+  createdAt: string;
+}
+
+/** Returned once, when a link is created. The raw token is never stored, so it can't be shown again. */
+export interface CreatedShareLinkDto extends ShareLinkDto {
+  token: string;
+}
+
+export interface JoinResult {
+  projectId: string;
+  role: Role;
+  /** False when the user was already a member (their existing role is kept). */
+  joined: boolean;
+}
+
+export interface CollabTokenResponse {
+  token: string;
+  /** WebSocket URL of the collab server as the browser should reach it. */
+  url: string;
+  role: Role;
+  user: { id: string; name: string; color: string; initials: string };
+}

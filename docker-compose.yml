@@ -9,6 +9,11 @@ x-node: &node
       required: false
   restart: unless-stopped
 
+# Shared by api (signs collab tokens) and collab (verifies them). Override in .env for anything
+# beyond local development; must be at least 32 characters.
+x-collab-secret: &collab-secret
+  COLLAB_JWT_SECRET: ${COLLAB_JWT_SECRET:-dev-only-collab-secret-change-me-please-0123456789}
+
 x-db-env: &db-env
   DATABASE_URL: postgresql://collabcode:collabcode@postgres:5432/collabcode
   REDIS_URL: redis://redis:6379
@@ -49,9 +54,11 @@ services:
   api:
     <<: *node
     environment:
-      <<: *db-env
+      <<: [*db-env, *collab-secret]
       API_PORT: "4000"
       WEB_ORIGIN: http://localhost:3000
+      # The collab server as the BROWSER reaches it (published port on the host).
+      COLLAB_PUBLIC_URL: ${COLLAB_PUBLIC_URL:-ws://localhost:1234}
     command: pnpm --filter @collabcode/api start
     ports: ["4000:4000"]
     depends_on:
@@ -70,15 +77,20 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
 
-  # Placeholders until Phase 2 (collab) and Phase 6 (runner).
+  # Real-time collaboration (Hocuspocus/Yjs). Scale horizontally by running more instances:
+  # they sync through Redis.
   collab:
     <<: *node
-    environment: { <<: *db-env, PORT: "1234" }
+    environment:
+      <<: [*db-env, *collab-secret]
+      PORT: "1234"
     command: pnpm --filter @collabcode/collab start
     ports: ["1234:1234"]
     depends_on:
       migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
 
+  # Placeholder until Phase 6.
   runner:
     <<: *node
     environment: { <<: *db-env, PORT: "5000" }

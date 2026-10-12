@@ -4,12 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
     "typecheck": "tsc -p .",
-    "test": "echo 'collab: no tests yet (arrives in a later phase)'"
+    "test": "vitest run"
   },
   "devDependencies": {
-    "tsx": "^4.23.15"
+    "@hocuspocus/provider": "^4.7.0",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "vitest": "^5.0.3",
+    "ws": "^8.22.0"
+  },
+  "dependencies": {
+    "@collabcode/db": "workspace:*",
+    "@collabcode/shared": "workspace:*",
+    "@hocuspocus/extension-database": "^4.7.0",
+    "@hocuspocus/extension-redis": "^4.7.0",
+    "@hocuspocus/server": "^4.7.0",
+    "yjs": "^13.6.33"
   }
 }

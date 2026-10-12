@@ -1,10 +1,12 @@
 import { redirect } from "next/navigation";
-import { DEV_SESSION_TOKENS } from "@collabcode/shared";
+import { DEV_SESSION_TOKENS, safeRedirectPath } from "@collabcode/shared";
 import { auth, enabledProviders, signIn } from "@/auth";
 
-export default async function Home() {
+export default async function Home({ searchParams }: { searchParams: Promise<{ callbackUrl?: string }> }) {
+  // Where to go after signing in (e.g. back to a share link). Only same-site paths are honoured.
+  const next = safeRedirectPath((await searchParams).callbackUrl);
   const session = await auth();
-  if (session?.user) redirect("/dashboard");
+  if (session?.user) redirect(next);
   const devLogin = process.env.DEV_LOGIN === "true" && process.env.NODE_ENV !== "production";
 
   return (
@@ -20,7 +22,7 @@ export default async function Home() {
             key={p.id}
             action={async () => {
               "use server";
-              await signIn(p.id, { redirectTo: "/dashboard" });
+              await signIn(p.id, { redirectTo: next });
             }}
           >
             <button className="w-full rounded-md bg-slate-900 px-4 py-2 font-medium text-white hover:bg-slate-700 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200">
@@ -43,7 +45,7 @@ export default async function Home() {
           <ul className="flex gap-4 text-sm underline">
             {Object.keys(DEV_SESSION_TOKENS).map((u) => (
               <li key={u}>
-                <a href={`/api/dev-login?user=${u}`}>Sign in as {u}</a>
+                <a href={`/api/dev-login?user=${u}&next=${encodeURIComponent(next)}`}>Sign in as {u}</a>
               </li>
             ))}
           </ul>

@@ -16,6 +16,7 @@
     "@fastify/helmet": "^13.1.2",
     "@fastify/rate-limit": "^11.2.1",
     "fastify": "^5.12.5",
+    "jose": "^6.2.12",
     "zod": "^4.6.6"
   },
   "devDependencies": {
