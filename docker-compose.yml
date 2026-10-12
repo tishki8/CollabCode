@@ -1,0 +1,90 @@
+# Local development stack: `docker compose up --build`
+# Open http://localhost:3000 and use the "Development login" links (seeded demo users).
+x-node: &node
+  build:
+    context: .
+    dockerfile: docker/node.Dockerfile
+  env_file:
+    - path: .env
+      required: false
+  restart: unless-stopped
+
+x-db-env: &db-env
+  DATABASE_URL: postgresql://collabcode:collabcode@postgres:5432/collabcode
+  REDIS_URL: redis://redis:6379
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: collabcode
+      POSTGRES_PASSWORD: collabcode
+      POSTGRES_DB: collabcode
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U collabcode"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: apply migrations, then seed the demo users/project (idempotent).
+  migrate:
+    <<: *node
+    restart: "no"
+    environment: { <<: *db-env }
+    command: sh -c "pnpm --filter @collabcode/db exec prisma migrate deploy && pnpm db:seed"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *node
+    environment:
+      <<: *db-env
+      API_PORT: "4000"
+      WEB_ORIGIN: http://localhost:3000
+    command: pnpm --filter @collabcode/api start
+    ports: ["4000:4000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    <<: *node
+    environment:
+      <<: *db-env
+      API_URL: http://api:4000
+      AUTH_URL: http://localhost:3000
+      AUTH_SECRET: ${AUTH_SECRET:-dev-only-secret-change-me}
+      DEV_LOGIN: ${DEV_LOGIN:-true}
+    command: pnpm --filter @collabcode/web dev
+    ports: ["3000:3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  # Placeholders until Phase 2 (collab) and Phase 6 (runner).
+  collab:
+    <<: *node
+    environment: { <<: *db-env, PORT: "1234" }
+    command: pnpm --filter @collabcode/collab start
+    ports: ["1234:1234"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  runner:
+    <<: *node
+    environment: { <<: *db-env, PORT: "5000" }
+    command: pnpm --filter @collabcode/runner start
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+volumes:
+  pgdata:

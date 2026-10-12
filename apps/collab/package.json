@@ -1,0 +1,15 @@
+{
+  "name": "@collabcode/collab",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc -p .",
+    "test": "echo 'collab: no tests yet (arrives in a later phase)'"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  }
+}
