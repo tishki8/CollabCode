@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { DEV_SESSION_TOKENS, safeRedirectPath } from "@collabcode/shared";
+import { DEV_USER_EMAILS, safeRedirectPath } from "@collabcode/shared";
 import { auth, enabledProviders, signIn } from "@/auth";
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ callbackUrl?: string }> }) {
@@ -43,7 +43,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ c
             Development login (seeded demo users)
           </h2>
           <ul className="flex gap-4 text-sm underline">
-            {Object.keys(DEV_SESSION_TOKENS).map((u) => (
+            {Object.keys(DEV_USER_EMAILS).map((u) => (
               <li key={u}>
                 <a href={`/api/dev-login?user=${u}&next=${encodeURIComponent(next)}`}>Sign in as {u}</a>
               </li>
