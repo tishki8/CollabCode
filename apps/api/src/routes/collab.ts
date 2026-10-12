@@ -28,7 +28,7 @@ export const collabRoutes =
           token: await signCollabToken(user.id, opts.secret),
           url: opts.publicUrl,
           role: member.role,
-          user: { id: user.id, name: user.name, color: member.color, initials: member.initials },
+          user: { id: user.id, name: user.name, color: member.color, initials: member.initials, isGuest: user.isGuest },
         };
       },
     );

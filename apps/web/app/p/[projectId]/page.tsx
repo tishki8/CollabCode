@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import type { FileNodeDto, ProjectDetail } from "@collabcode/shared";
-import { auth } from "@/auth";
+import { getCurrentUser } from "@/lib/current-user";
 import { serverApi } from "@/lib/api";
 import { Header } from "@/components/Header";
 import { ProjectWorkspace } from "@/components/ProjectWorkspace";
@@ -12,8 +12,8 @@ export default async function ProjectPage({
   params: Promise<{ projectId: string }>;
   searchParams: Promise<{ file?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect("/");
+  const me = await getCurrentUser();
+  if (!me) redirect("/");
   const { projectId } = await params;
   const { file } = await searchParams;
 
@@ -23,10 +23,10 @@ export default async function ProjectPage({
 
   return (
     <>
-      <Header userName={session.user.name ?? "You"} />
+      <Header userName={me.name} isGuest={me.isGuest} />
       <ProjectWorkspace
         project={project.data}
-        currentUserId={session.user.id}
+        currentUserId={me.id}
         initialNodes={files.data ?? []}
         requestedFileId={typeof file === "string" ? file : null}
       />

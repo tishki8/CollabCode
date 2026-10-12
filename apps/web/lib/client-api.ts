@@ -3,6 +3,8 @@ export class ApiRequestError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** Machine-readable reason from the API (e.g. LINK_EXPIRED), when there is one. */
+    public code?: string,
   ) {
     super(message);
   }
@@ -18,7 +20,7 @@ export async function api<T = unknown>(method: string, path: string, body?: unkn
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = Array.isArray(json.details) ? `: ${json.details.map((d: { message: string }) => d.message).join(", ")}` : "";
-    throw new ApiRequestError(res.status, (json.error ?? "Request failed") + detail);
+    throw new ApiRequestError(res.status, (json.error ?? "Request failed") + detail, json.code);
   }
   return json as T;
 }

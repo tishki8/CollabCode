@@ -1,6 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 // Defaults for local runs / CI; override via the environment. These are development values only.
+process.env.DATABASE_URL ??= "postgresql://collabcode:collabcode@localhost:5432/collabcode"; // the tests read the database directly in a few places
 const env = {
   DATABASE_URL: "postgresql://collabcode:collabcode@localhost:5432/collabcode",
   COLLAB_JWT_SECRET: "dev-only-collab-secret-change-me-please-0123456789",
@@ -10,6 +11,7 @@ const env = {
   AUTH_SECRET: "e2e-auth-secret",
   AUTH_URL: "http://localhost:3000",
   DEV_LOGIN: "true",
+  TRUST_PROXY_HOPS: "1", // the API sits behind the web app's /api/v1 proxy, as in docker-compose.yml
   ...Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined)),
 };
 

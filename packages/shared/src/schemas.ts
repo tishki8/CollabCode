@@ -76,16 +76,28 @@ export interface FileNodeDto {
 
 export interface ApiError {
   error: string;
+  /** Present for errors the UI treats specially (see API_ERROR_CODES). */
+  code?: string;
   details?: unknown;
 }
 
 // ---------- sharing & collaboration ----------
 
-/** Roles a share link can grant in this phase (commenter arrives with the review tools). */
-export const SHARE_LINK_ROLES = ["VIEWER", "EDITOR"] as const;
+/** Roles a share link can grant. Commenters can view now and will be able to comment once comments exist. */
+export const SHARE_LINK_ROLES = ["VIEWER", "COMMENTER", "EDITOR"] as const;
+export type ShareLinkRole = (typeof SHARE_LINK_ROLES)[number];
 
-export const createShareLinkInput = z.object({ role: z.enum(SHARE_LINK_ROLES) });
-export type CreateShareLinkInput = z.infer<typeof createShareLinkInput>;
+/** How long a new link stays valid. The server turns this into a timestamp (it never trusts a client clock). */
+export const LINK_EXPIRY_CHOICES = ["1h", "1d", "7d", "never"] as const;
+export type LinkExpiryChoice = (typeof LINK_EXPIRY_CHOICES)[number];
+
+export const createShareLinkInput = z.object({
+  role: z.enum(SHARE_LINK_ROLES),
+  expiresIn: z.enum(LINK_EXPIRY_CHOICES).default("7d"),
+  /** Invite-only: joining creates a request that the owner must approve. */
+  requiresApproval: z.boolean().default(false),
+});
+export type CreateShareLinkInput = z.input<typeof createShareLinkInput>;
 
 /** The secret part of a share link URL: url-safe base64, no other characters. */
 export const shareTokenSchema = z
@@ -94,11 +106,37 @@ export const shareTokenSchema = z
   .max(128)
   .regex(/^[A-Za-z0-9_-]+$/, "Invalid link");
 export const joinShareLinkInput = z.object({ token: shareTokenSchema });
+export const previewShareLinkInput = joinShareLinkInput;
+
+/**
+ * What a guest is called. Shown to everyone in presence and on cursors, so keep it short and
+ * plain: no control characters, runs of spaces collapsed.
+ */
+export const GUEST_NAME_MAX = 40;
+export const displayNameSchema = z
+  .string()
+  .transform((s) => s.replace(/\s+/g, " ").trim())
+  .pipe(
+    z
+      .string()
+      .min(1, "Please enter a name")
+      .max(GUEST_NAME_MAX, `Name must be at most ${GUEST_NAME_MAX} characters`)
+      // eslint-disable-next-line no-control-regex
+      .refine((s) => !/[\u0000-\u001f\u007f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069]/.test(s), "Name contains invalid characters"),
+  );
+export const joinAsGuestInput = z.object({ token: shareTokenSchema, displayName: displayNameSchema });
+export type JoinAsGuestInput = z.input<typeof joinAsGuestInput>;
+
+/** A project's guests are capped so a leaked link cannot be used to mint unlimited accounts. */
+export const MAX_GUESTS_PER_PROJECT = 50;
 
 export interface ShareLinkDto {
   id: string;
-  role: "VIEWER" | "EDITOR" | "COMMENTER";
+  role: ShareLinkRole;
   createdAt: string;
+  /** ISO timestamp, or null for a link that never expires. */
+  expiresAt: string | null;
+  requiresApproval: boolean;
 }
 
 /** Returned once, when a link is created. The raw token is never stored, so it can't be shown again. */
@@ -106,11 +144,44 @@ export interface CreatedShareLinkDto extends ShareLinkDto {
   token: string;
 }
 
-export interface JoinResult {
-  projectId: string;
-  role: Role;
-  /** False when the user was already a member (their existing role is kept). */
-  joined: boolean;
+/** What someone holding a link may see before joining (so they get a clear message, not a surprise). */
+export interface LinkPreview {
+  projectName: string;
+  ownerName: string;
+  role: ShareLinkRole;
+  requiresApproval: boolean;
+  expiresAt: string | null;
+}
+
+export type JoinResult =
+  | {
+      status: "joined";
+      projectId: string;
+      role: Role;
+      /** False when the user was already a member (their existing role is kept). */
+      joined: boolean;
+    }
+  | {
+      /** Invite-only link: waiting for the owner. Ask again later (the call is idempotent). */
+      status: "pending";
+    };
+
+export interface JoinRequestDto {
+  id: string;
+  /** The role they will get if approved (the link's role). */
+  role: ShareLinkRole;
+  requester: { id: string; name: string; isGuest: boolean };
+  createdAt: string;
+}
+
+/** Machine-readable error codes the UI uses to pick a clear message. */
+export const API_ERROR_CODES = ["LINK_EXPIRED", "LINK_INVALID", "JOIN_DENIED", "GUEST_LIMIT"] as const;
+export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
+
+export interface MeDto {
+  id: string;
+  name: string;
+  isGuest: boolean;
 }
 
 export interface CollabTokenResponse {
@@ -118,5 +189,5 @@ export interface CollabTokenResponse {
   /** WebSocket URL of the collab server as the browser should reach it. */
   url: string;
   role: Role;
-  user: { id: string; name: string; color: string; initials: string };
+  user: { id: string; name: string; color: string; initials: string; isGuest: boolean };
 }

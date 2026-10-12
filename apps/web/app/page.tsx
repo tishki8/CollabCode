@@ -1,12 +1,12 @@
 import { redirect } from "next/navigation";
 import { DEV_USER_EMAILS, safeRedirectPath } from "@collabcode/shared";
-import { auth, enabledProviders, signIn } from "@/auth";
+import { enabledProviders, signIn } from "@/auth";
+import { getCurrentUser } from "@/lib/current-user";
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ callbackUrl?: string }> }) {
   // Where to go after signing in (e.g. back to a share link). Only same-site paths are honoured.
   const next = safeRedirectPath((await searchParams).callbackUrl);
-  const session = await auth();
-  if (session?.user) redirect(next);
+  if (await getCurrentUser()) redirect(next); // signed in (account) or already a guest
   const devLogin = process.env.DEV_LOGIN === "true" && process.env.NODE_ENV !== "production";
 
   return (

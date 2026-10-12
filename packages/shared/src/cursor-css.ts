@@ -10,11 +10,12 @@ export interface CursorUser {
   name?: unknown;
   color?: unknown;
   initials?: unknown;
+  isGuest?: unknown;
 }
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 export const FALLBACK_COLOR = "#666666";
-const MAX_LABEL = 24;
+const MAX_LABEL = 32;
 
 export const safeColor = (c: unknown): string => (typeof c === "string" && HEX.test(c) ? c : FALLBACK_COLOR);
 
@@ -35,8 +36,12 @@ export function cursorLabel(user: CursorUser): string {
     typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, "").trim() : "";
   const initials = clean(user.initials).slice(0, 3);
   const name = clean(user.name);
-  const label = [initials, name].filter(Boolean).join(" ") || "Unknown";
-  return label.length > MAX_LABEL ? label.slice(0, MAX_LABEL - 1) + "…" : label;
+  // Guests are labelled so nobody can pass as a signed-in teammate by choosing a familiar name.
+  const label = [initials, name, user.isGuest === true ? "(guest)" : ""].filter(Boolean).join(" ") || "Unknown";
+  if (label.length <= MAX_LABEL) return label;
+  // Truncate the name, but never cut off the "(guest)" marker.
+  const marker = user.isGuest === true ? " (guest)" : "";
+  return label.slice(0, MAX_LABEL - 1 - marker.length) + "…" + marker;
 }
 
 export function cursorCss(clientId: number, user: CursorUser): string {

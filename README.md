@@ -4,11 +4,11 @@ A browser-based collaborative code editor for small teams. Open a shared project
 together in real time, run the code, and always see **who wrote what**, like Google Docs,
 but for code, and without depending on anyone's machine being online.
 
-> **Status: Phase 2 of 7 (real-time collaboration).** Sign-in, projects, file tree, dashboard,
-> live multi-user editing with named cursors and presence, persistence, and basic share links
-> (viewer / editor, revocable) work. Guest access, invite-only approval, link expiry,
-> authorship tracking, review tools, code execution and export arrive in later phases.
-> Sections marked *(planned)* describe the target design.
+> **Status: Phase 3 of 7 (sharing).** Sign-in, projects, file tree, dashboard, live multi-user
+> editing with named cursors and presence, persistence, and share links with **guest access,
+> invite-only approval, expiry and viewer / commenter / editor roles**. Authorship tracking,
+> review tools (comments, suggestions, checkpoints), code execution and export arrive in later
+> phases. Sections marked *(planned)* describe the target design.
 
 ## Architecture
 
@@ -51,20 +51,27 @@ port 1234 (the collab WebSocket); change `COLLAB_PUBLIC_URL` if you expose it el
 
 ### Try the collaboration flow (about 2 minutes)
 
-1. **Alice:** open <http://localhost:3000>, click *Sign in as alice*, create a project
-   (any language). The default file opens in the editor and the status shows **Live**.
-2. Click **Share** in the sidebar, choose *edit*, **Create link**, then **Copy link**.
-3. **Bob:** open a *private/incognito window* (separate cookies), paste the link. You are sent to
-   sign in; click *Sign in as bob* and you land in Alice's project as an *editor*.
-4. Type in both windows: text appears live in the other window, each person's cursor carries a
-   label such as "AD Alice Demo", and the sidebar's *Online now* list shows both people and the
-   file each is viewing.
-5. In Alice's window create a second link with *view only*, revoke the first, and open the viewer
-   link as a different user (or Bob in another project): the editor shows *Read-only (viewer)*
-   and typing does nothing. Revoked links show "invalid or has been revoked".
-6. Stop and restart the stack (`docker compose restart collab`): reopen the file and the
-   text is still there. Edits made while briefly offline (e.g. pause the network in dev tools)
-   merge when the connection returns.
+1. **Alice:** open <http://localhost:3000>, click *Sign in as alice*, create a project (any
+   language). The default file opens in the editor and the status shows **Live**.
+2. Click **Share project** (top of the sidebar). Pick what people can do (*edit / comment / view
+   only*), how long the link lasts (*1 hour / 1 day / 7 days / never*), optionally tick *Require my
+   approval to join*, then **Create link** and **Copy link**.
+3. **A guest (no account):** open a *private/incognito window* and paste the link. Type a display
+   name and click *Continue as guest*. You are in the project, marked **guest**, and Alice sees you
+   in *Online now* and as a labelled cursor (e.g. "GG Gina Guest (guest)").
+4. **Bob (has an account):** in another private window paste the link and choose *Sign in
+   instead*, then *Sign in as bob*. You land in the project with the link's role.
+5. Type in the windows: text appears live everywhere. With a *view only* or *comment* link the
+   editor says *Read-only* and typing does nothing.
+6. **Invite-only:** create a link with *Require my approval to join*. Whoever opens it (guest or
+   account) sees "Waiting for approval". Alice's *Share project* button shows a badge ("1 waiting");
+   open it and **Approve** or **Reject**. The waiting person is let in (or told no) within a few
+   seconds.
+7. **Expiry:** an expired link shows "This link has expired" instead of a name form. (To try it
+   without waiting, create a 1-hour link and move its `expiresAt` into the past in the database.)
+8. Stop and restart the stack (`docker compose restart collab`): reopen the file and the text is
+   still there. Edits made while briefly offline (e.g. pause the network in dev tools) merge when
+   the connection returns.
 
 ### Option B: local development
 
@@ -113,6 +120,7 @@ CI (`.github/workflows/ci.yml`) runs lint, type-check and tests against a Postgr
 | `API_URL` | web | Where the web server (and the `/api/v1` rewrite) reaches the API |
 | `API_PORT` | api | API listen port (default 4000) |
 | `PORT` | collab | Collab listen port (default 1234) |
+| `TRUST_PROXY_HOPS` | api | Number of reverse proxies in front of the API (default 0). Compose sets `1` because the browser reaches the API through the web app's `/api/v1` proxy; the API then uses the client address that proxy appended to `X-Forwarded-For` and ignores anything the client wrote there. Keep the API port unpublished in production |
 | `AUTH_SECRET`, `AUTH_URL` | web | Auth.js secret and public URL |
 | `AUTH_GOOGLE_ID/SECRET`, `AUTH_GITHUB_ID/SECRET` | web | OAuth credentials; a provider is shown only when configured |
 | `DEV_LOGIN` | web | `true` enables passwordless login as seeded demo users. **Never in production** (also hard-disabled when `NODE_ENV=production`) |
@@ -168,25 +176,50 @@ Secrets live in environment variables only; `.env` is git-ignored.
   from our own origin (no CDN), so the editor works offline and in Docker. y-monaco is pointed
   at that already-loaded instance instead of bundling a second copy.
 
-### Share links (Phase 2: basic version)
+### Share links, guests and approval (Phase 3)
 
-- The owner creates a link with a role (*viewer* or *editor*). The link's secret is 256 random
-  bits; **only its SHA-256 hash is stored**, so a database leak doesn't leak working links. The
-  full URL is therefore shown once, at creation.
-- Opening `/join/<token>` while signed in adds you to the project with the link's role. Signed
-  out, you're sent to sign in and straight back (only same-site return paths are accepted).
-  Joining never changes an existing member's role (no accidental upgrade or downgrade).
-- Revoking stops the link working; people who already joined keep their access (removing members
-  comes later). Unknown, revoked and expired links give the same answer.
-- The `/join/*` pages send `Referrer-Policy: no-referrer` and `no-store` so the token doesn't leak.
-- Rate limits are counted **per signed-in user**, not per IP, so a team sharing one network
-  doesn't throttle itself.
+- **Links.** The owner creates a link with a role (*viewer*, *commenter* or *editor*, never
+  owner), a lifetime (*1 hour*, *1 day*, *7 days*, *never*) and optionally "require approval". The
+  secret is 256 random bits and **only its SHA-256 hash is stored**, so the full URL is shown once,
+  at creation. Revoking stops the link and declines its pending requests; people who already
+  joined keep access.
+- **Guests (no account).** Opening a link without an account asks for a display name only. The
+  server validates the link *before* creating anything, then creates a guest user (no email) and a
+  30-day session cookie; only a hash of the cookie secret is stored. A guest gets exactly the
+  link's role, can open the shared project(s) but **cannot create projects**, and is marked
+  **guest** in the header, the presence list and on their cursor, so nobody can pass as a
+  signed-in teammate by choosing a familiar name. Names are limited to 40 characters with control,
+  bidirectional-override and zero-width characters rejected. Each project accepts at most 50 guests.
+- **Invite-only.** Joining records one pending request and grants nothing. The owner sees pending
+  requests (with who is asking, whether they are a guest, and the role they'd get) and approves or
+  rejects them; the member always gets the **link's** role, never anything the requester sent. The
+  waiting visitor's page re-checks every few seconds. A rejected person cannot simply ask again;
+  revoking the link declines everything pending; a link accepts at most 50 pending requests.
+- **Expiry.** Computed from the *server's* clock when the link is created and checked on every use.
+  An expired link answers `410` with a specific message ("This link has expired"), whereas
+  unknown and revoked links look identical (`404`). Expiry stops *new* joins; existing members keep
+  access.
+- **Commenter.** Gets read access now (the collab server makes the connection read-only) and will
+  be able to comment once Phase 5 adds comments.
+- **Edits are blocked on the server, not in the UI.** The collab server decides read-only from the
+  database role on every connection and refuses document updates from viewers and commenters,
+  including guests holding those roles. Tests drive the WebSocket with hand-built protocol frames
+  (so no client library is involved) and also tamper with the page to unlock Monaco: the edit stays
+  on the attacker's own screen, is never broadcast and never stored. A positive control proves
+  those same frames *are* accepted from an editor.
+- **Rate limits** are per signed-in/guest session, or per client address for anonymous calls (the
+  guest-join endpoint allows 60/min per address so a classroom can join together; the link
+  preview is limited per link because the web server makes that call on visitors' behalf).
 
-### Known limitations in this phase
+### Known limitations
 
 - The file tree is not live: other people's new/renamed files appear after a reload.
-- Removing a member (and kicking them from an open session) isn't built; revoking a link doesn't
-  remove existing members.
+- Owners cannot yet remove members or change their roles, and revoking a link does not remove
+  people who already joined. Expiry likewise only stops new joins.
+- Expired guest sessions and guests who were rejected are not yet cleaned up from the database.
+- Pending requests are discovered by polling (every 3-5 s), not pushed.
+- A guest holding an *editor* link can edit (guests get "the link's role"). If you'd rather cap
+  guests at commenter, that is a one-line change in `services/share-links.ts`.
 - Rate limit counters are in memory (per API instance); they move to Redis in Phase 6.
 - Documents have no size cap yet (frames are capped at 5 MB).
 

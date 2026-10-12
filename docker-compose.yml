@@ -56,6 +56,9 @@ services:
     environment:
       <<: [*db-env, *collab-secret]
       API_PORT: "4000"
+      # The browser reaches the API through the web app's proxy: trust exactly that one hop so
+      # rate limits use each visitor's real address. Do NOT publish the API port in production.
+      TRUST_PROXY_HOPS: "1"
       WEB_ORIGIN: http://localhost:3000
       # The collab server as the BROWSER reaches it (published port on the host).
       COLLAB_PUBLIC_URL: ${COLLAB_PUBLIC_URL:-ws://localhost:1234}

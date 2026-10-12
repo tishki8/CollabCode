@@ -79,8 +79,8 @@ run("share links and collab tokens (integration)", () => {
     expect((await call(null, "POST", `/projects/${projectId}/share-links`, { role: "EDITOR" })).statusCode).toBe(401);
   });
 
-  it("rejects roles a link may not grant in this phase", async () => {
-    for (const role of ["OWNER", "COMMENTER", "ADMIN", ""]) {
+  it("rejects roles a link may never grant", async () => {
+    for (const role of ["OWNER", "ADMIN", "viewer", ""]) {
       expect((await call("owner", "POST", `/projects/${projectId}/share-links`, { role })).statusCode, role).toBe(400);
     }
   });
@@ -89,7 +89,7 @@ run("share links and collab tokens (integration)", () => {
     const link = await createLink("EDITOR");
     const res = await join("carol", link.token);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ projectId, role: "EDITOR", joined: true });
+    expect(res.json()).toEqual({ status: "joined", projectId, role: "EDITOR", joined: true });
     const member = await prisma.projectMember.findUniqueOrThrow({
       where: { projectId_userId: { projectId, userId: ids.carol! } },
     });
@@ -117,9 +117,9 @@ run("share links and collab tokens (integration)", () => {
   it("opening a link again, or with another link, never changes an existing role", async () => {
     const viewerLink = await createLink("VIEWER");
     const again = await join("carol", viewerLink.token); // carol is an EDITOR: must not be downgraded
-    expect(again.json()).toEqual({ projectId, role: "EDITOR", joined: false });
+    expect(again.json()).toEqual({ status: "joined", projectId, role: "EDITOR", joined: false });
     const ownerOpens = await join("owner", viewerLink.token);
-    expect(ownerOpens.json()).toEqual({ projectId, role: "OWNER", joined: false });
+    expect(ownerOpens.json()).toEqual({ status: "joined", projectId, role: "OWNER", joined: false });
     const editorLink = await createLink("EDITOR");
     expect((await join("dave", editorLink.token)).json()).toMatchObject({ role: "VIEWER", joined: false }); // no silent upgrade
   });
@@ -165,10 +165,12 @@ run("share links and collab tokens (integration)", () => {
     await prisma.project.delete({ where: { id: other } });
   });
 
-  it("expired links (reserved for Phase 3) are refused too", async () => {
+  it("expired links are refused with a specific 'expired' answer (410), unlike unknown/revoked (404)", async () => {
     const link = await createLink("VIEWER");
     await prisma.shareLink.update({ where: { id: link.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
-    expect((await join("outsider", link.token)).statusCode).toBe(404);
+    const res = await join("outsider", link.token);
+    expect(res.statusCode).toBe(410);
+    expect(res.json()).toMatchObject({ code: "LINK_EXPIRED", error: expect.stringMatching(/expired/i) });
   });
 
   describe("collab token", () => {
