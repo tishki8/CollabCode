@@ -14,6 +14,7 @@ interface Person {
   color: string;
   fileId: string | null;
   isYou: boolean;
+  isGuest: boolean;
 }
 
 /**
@@ -55,6 +56,7 @@ export function PresencePanel({
               color: safeColor(st.user.color),
               fileId: typeof st.fileId === "string" ? st.fileId : null,
               isYou: st.user.id === currentUserId,
+              isGuest: st.user.isGuest === true,
             });
           });
           setPeople([...byUser.values()].sort((a, b) => Number(b.isYou) - Number(a.isYou) || a.name.localeCompare(b.name)));
@@ -99,6 +101,9 @@ export function PresencePanel({
               <span className="flex flex-col leading-tight">
                 <span>
                   {p.name}
+                  {p.isGuest && (
+                    <span className="ml-1 rounded border border-slate-400 px-1 text-xs" data-testid="guest-tag">guest</span>
+                  )}
                   {p.isYou && " (you)"}
                 </span>
                 <span className="text-xs text-slate-600 dark:text-slate-400">

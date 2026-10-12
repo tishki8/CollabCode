@@ -14,7 +14,7 @@ export interface ConnContext {
   projectId: string;
   role: Role;
   /** Identity shown on cursors and in the presence panel. Comes from the DB, never the client. */
-  user: { id: string; name: string; color: string; initials: string };
+  user: { id: string; name: string; color: string; initials: string; isGuest: boolean };
 }
 
 export interface AuthResult {
@@ -76,7 +76,7 @@ export async function authorize(args: {
 
   const member = await prisma.projectMember.findUnique({
     where: { projectId_userId: { projectId, userId } },
-    select: { role: true, color: true, initials: true, user: { select: { id: true, name: true } } },
+    select: { role: true, color: true, initials: true, user: { select: { id: true, name: true, isGuest: true } } },
   });
   if (!member || !can(member.role, "file:read")) throw new Error("permission-denied");
 
@@ -85,7 +85,13 @@ export async function authorize(args: {
       userId,
       projectId,
       role: member.role,
-      user: { id: member.user.id, name: member.user.name, color: member.color, initials: member.initials },
+      user: {
+        id: member.user.id,
+        name: member.user.name,
+        color: member.color,
+        initials: member.initials,
+        isGuest: member.user.isGuest,
+      },
     },
     // Presence rooms carry no file content, so nobody may write to them.
     readOnly: doc.kind === "presence" || !can(member.role, "file:edit"),

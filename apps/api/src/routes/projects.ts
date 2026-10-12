@@ -13,7 +13,7 @@ import {
 import type { Ctx } from "../app";
 import { requireAction } from "../services/access";
 import { resolveFilePath } from "../services/tree";
-import { HttpError } from "../errors";
+import { HttpError, forbidden } from "../errors";
 
 const idParams = z.object({ id: z.string().min(1).max(64) });
 
@@ -53,6 +53,8 @@ export const projectRoutes =
 
     app.post("/", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
       const user = await ctx.user(req);
+      // Guests are here for one shared project; they have no account to own anything.
+      if (user.isGuest) throw forbidden("Guests cannot create projects. Sign in to create your own.");
       const input = ctx.parse(createProjectInput, req.body);
 
       // Project + owner membership + default entry file are created together or not at all.

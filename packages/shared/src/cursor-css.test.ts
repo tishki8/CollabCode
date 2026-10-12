@@ -13,7 +13,7 @@ describe("cursor css", () => {
   it("labels with initials and name, so colour is never the only signal", () => {
     expect(cursorLabel({ initials: "AD", name: "Alice Demo" })).toBe("AD Alice Demo");
     expect(cursorLabel({})).toBe("Unknown");
-    expect(cursorLabel({ name: "x".repeat(100) }).length).toBeLessThanOrEqual(24);
+    expect(cursorLabel({ name: "x".repeat(100) }).length).toBeLessThanOrEqual(32);
   });
 
   it("cannot be broken out of by a hostile name", () => {

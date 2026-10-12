@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { LANGUAGE_INFO, type ProjectList, type ProjectSummary } from "@collabcode/shared";
-import { auth } from "@/auth";
+import { getCurrentUser } from "@/lib/current-user";
 import { serverApi } from "@/lib/api";
 import { Header } from "@/components/Header";
 import { CreateProjectForm } from "@/components/CreateProjectForm";
@@ -29,23 +29,32 @@ function ProjectCards({ projects, empty }: { projects: ProjectSummary[]; empty: 
 }
 
 export default async function Dashboard() {
-  const session = await auth();
-  if (!session?.user) redirect("/");
+  const me = await getCurrentUser();
+  if (!me) redirect("/");
   const { data } = await serverApi<ProjectList>("/projects");
   const projects = data ?? { mine: [], shared: [] };
 
   return (
     <>
-      <Header userName={session.user.name ?? "You"} />
+      <Header userName={me.name} isGuest={me.isGuest} />
       <main id="main" className="mx-auto flex max-w-5xl flex-col gap-8 p-6">
-        <section aria-labelledby="new">
-          <h2 id="new" className="mb-3 text-xl font-semibold">New project</h2>
-          <CreateProjectForm />
-        </section>
-        <section aria-labelledby="mine">
-          <h2 id="mine" className="mb-3 text-xl font-semibold">My projects</h2>
-          <ProjectCards projects={projects.mine} empty="You have no projects yet. Create one above." />
-        </section>
+        {me.isGuest ? (
+          <p className="rounded border border-slate-300 p-3 text-sm dark:border-slate-700">
+            You are a guest, so you can open the projects shared with you but not create your own.
+            <Link href="/" className="ml-1 underline">Sign in</Link> to create projects.
+          </p>
+        ) : (
+          <>
+            <section aria-labelledby="new">
+              <h2 id="new" className="mb-3 text-xl font-semibold">New project</h2>
+              <CreateProjectForm />
+            </section>
+            <section aria-labelledby="mine">
+              <h2 id="mine" className="mb-3 text-xl font-semibold">My projects</h2>
+              <ProjectCards projects={projects.mine} empty="You have no projects yet. Create one above." />
+            </section>
+          </>
+        )}
         <section aria-labelledby="shared">
           <h2 id="shared" className="mb-3 text-xl font-semibold">Shared with me</h2>
           <ProjectCards projects={projects.shared} empty="Nothing has been shared with you yet." />

@@ -1,61 +1,10 @@
-import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { connected, createProject, createShareLink, editorText, remoteCursorLabel, signIn, typeInEditor } from "./helpers";
 
 // Requires: seeded DB (alice + bob), DEV_LOGIN=true, and the api, collab and web servers
 // running (playwright.config.ts starts them if they are not already up).
-//
-// Each user gets their own browser CONTEXT: separate cookies and storage, exactly like
-// an incognito window.
 
-async function signIn(browser: Browser, who: "alice" | "bob", next = "/dashboard") {
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  await page.goto(`/api/dev-login?user=${who}&next=${encodeURIComponent(next)}`);
-  return { context, page };
-}
-
-async function createProject(page: Page, name: string) {
-  await page.goto("/dashboard");
-  await page.getByLabel("Project name").fill(name);
-  await page.getByLabel("Language").selectOption("PYTHON");
-  await page.getByRole("button", { name: "Create project" }).click();
-  await expect(page.getByRole("heading", { name })).toBeVisible();
-}
-
-/** Open the share panel, create a link with the given role and return its URL. */
-async function createShareLink(page: Page, role: "edit" | "view only") {
-  const panel = page.getByRole("region", { name: "Sharing" });
-  if ((await panel.getByTestId("share-body").count()) === 0) await panel.getByRole("button", { name: "Share" }).click();
-  await panel.getByLabel("Anyone with the link can").selectOption({ label: role });
-  await panel.getByRole("button", { name: "Create link" }).click();
-  const url = await panel.locator("#share-url").inputValue();
-  expect(url).toMatch(/\/join\/[A-Za-z0-9_-]{43}$/);
-  return url;
-}
-
-const connected = (page: Page) => expect(page.getByTestId("sync-status")).toHaveAttribute("data-status", "connected", { timeout: 15_000 });
-
-/**
- * The text of the open file, read straight from the Monaco model. Returns "" while Monaco is
- * still loading, so it is safe inside expect.poll() right after a navigation.
- */
-const editorText = (page: Page) =>
-  page.evaluate(() => {
-    const m = (window as unknown as { monaco?: { editor: { getModels(): { getValue(): string }[] } } }).monaco;
-    return m?.editor.getModels()[0]?.getValue() ?? "";
-  });
-
-async function typeInEditor(page: Page, text: string) {
-  await page.locator(".monaco-editor .view-lines").first().waitFor();
-  await page.locator(".monaco-editor .view-lines").first().click();
-  await page.keyboard.press("Control+End");
-  await page.keyboard.type(text);
-}
-
-/** Computed label of the remote cursor, i.e. what a human sees next to it. */
-const remoteCursorLabel = (page: Page) =>
-  page.locator(".yRemoteSelectionHead").first().evaluate((el) => getComputedStyle(el, "::after").content);
-
-const closeAll = async (...contexts: BrowserContext[]) => {
+const closeAll = async (...contexts: { close(): Promise<void> }[]) => {
   for (const c of contexts) await c.close();
 };
 
@@ -70,11 +19,12 @@ test.describe("Phase 2: real-time collaboration through a share link", () => {
     // Alice generates an editor link.
     const joinUrl = await createShareLink(alice.page, "edit");
 
-    // Bob (a fresh browser context = incognito) opens the link while signed out. He is sent
-    // to sign in, and straight back to the link afterwards.
+    // Bob (a fresh browser context = incognito) opens the link while signed out. He could join as
+    // a guest, but he has an account, so he chooses to sign in and is sent straight back to the link.
     const bobContext = await browser.newContext();
     const bobPage = await bobContext.newPage();
     await bobPage.goto(joinUrl);
+    await bobPage.getByRole("link", { name: "Sign in instead" }).click();
     await expect(bobPage).toHaveURL(/callbackUrl=/);
     await bobPage.getByRole("link", { name: "Sign in as bob" }).click();
 

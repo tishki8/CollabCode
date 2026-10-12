@@ -10,11 +10,14 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@hocuspocus/common": "^4.7.1",
     "@hocuspocus/provider": "^4.7.0",
     "@types/ws": "^8.18.2",
+    "lib0": "^0.2.119",
     "tsx": "^4.23.15",
     "vitest": "^5.0.3",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "y-protocols": "^1.0.7"
   },
   "dependencies": {
     "@collabcode/db": "workspace:*",

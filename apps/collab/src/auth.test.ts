@@ -6,12 +6,12 @@ import { authorize, parseDocumentName, sanitizeAwarenessState, type ConnContext 
 const SECRET = "test-secret-test-secret-test-secret";
 
 // Minimal fake of the two Prisma calls authorize() makes.
-function fakePrisma(opts: { file?: { projectId: string } | null; member?: { role: string } | null }) {
+function fakePrisma(opts: { file?: { projectId: string } | null; member?: { role: string } | null; guest?: boolean }) {
   return {
     fileNode: { findFirst: async () => opts.file ?? null },
     projectMember: {
       findUnique: async () =>
-        opts.member ? { ...opts.member, color: "#E69F00", initials: "AD", user: { id: "u1", name: "Alice Demo" } } : null,
+        opts.member ? { ...opts.member, color: "#E69F00", initials: "AD", user: { id: "u1", name: "Alice Demo", isGuest: opts.guest ?? false } } : null,
     },
   } as unknown as PrismaClient;
 }
@@ -62,7 +62,16 @@ describe("authorize", () => {
   it("takes the displayed identity from the database", async () => {
     const token = await signCollabToken("u1", SECRET);
     const r = await run(fakePrisma({ file: { projectId: "p" }, member: { role: "EDITOR" } }), "file:f1", token);
-    expect(r.context.user).toEqual({ id: "u1", name: "Alice Demo", color: "#E69F00", initials: "AD" });
+    expect(r.context.user).toEqual({ id: "u1", name: "Alice Demo", color: "#E69F00", initials: "AD", isGuest: false });
+  });
+
+  it("guests get exactly their role's rights: read-only for viewer/commenter, writable for editor", async () => {
+    const token = await signCollabToken("u1", SECRET);
+    for (const [role, readOnly] of [["VIEWER", true], ["COMMENTER", true], ["EDITOR", false]] as const) {
+      const r = await run(fakePrisma({ file: { projectId: "p" }, member: { role }, guest: true }), "file:f1", token);
+      expect(r.readOnly, `guest ${role}`).toBe(readOnly);
+      expect(r.context.user.isGuest).toBe(true); // so cursors and presence can mark them as guests
+    }
   });
 
   it("presence rooms are always read-only, even for owners", async () => {
@@ -78,7 +87,7 @@ describe("sanitizeAwarenessState", () => {
     userId: "u1",
     projectId: "p",
     role: "EDITOR",
-    user: { id: "u1", name: "Alice Demo", color: "#E69F00", initials: "AD" },
+    user: { id: "u1", name: "Alice Demo", color: "#E69F00", initials: "AD", isGuest: false },
   };
 
   it("overwrites a spoofed identity and drops unknown keys", () => {

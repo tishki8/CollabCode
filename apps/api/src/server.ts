@@ -8,5 +8,8 @@ const collabSecret = process.env.COLLAB_JWT_SECRET;
 if (!collabSecret || collabSecret.length < 32) throw new Error("COLLAB_JWT_SECRET is required and must be at least 32 characters");
 const collabPublicUrl = process.env.COLLAB_PUBLIC_URL ?? "ws://localhost:1234";
 
-const app = await buildApp({ prisma, webOrigin, collabSecret, collabPublicUrl, logger: true });
+// 1 when the API is only reached through the web app's /api/v1 proxy (see docker-compose.yml).
+const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+
+const app = await buildApp({ prisma, webOrigin, collabSecret, collabPublicUrl, trustProxyHops, logger: true });
 await app.listen({ port, host: "0.0.0.0" });

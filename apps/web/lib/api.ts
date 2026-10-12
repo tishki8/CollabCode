@@ -9,3 +9,19 @@ export async function serverApi<T>(path: string): Promise<{ status: number; data
   if (!res.ok) return { status: res.status, data: null };
   return { status: res.status, data: (await res.json()) as T };
 }
+
+/** Server-side POST on behalf of the visitor (used for the public link preview). */
+export async function serverApiPost<T>(
+  path: string,
+  body: unknown,
+): Promise<{ status: number; data: T | null; error?: { error: string; code?: string } }> {
+  const cookie = (await cookies()).toString();
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) return { status: res.status, data: null, error: await res.json().catch(() => ({ error: "Request failed" })) };
+  return { status: res.status, data: (await res.json()) as T };
+}

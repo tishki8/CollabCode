@@ -1,16 +1,17 @@
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { ZodError, type ZodType } from "zod";
 import type { PrismaClient } from "@collabcode/db";
 import { HttpError } from "./errors";
-import { createHash } from "node:crypto";
-import { requireUser, sessionTokenOf, type AuthUser } from "./plugins/auth";
+import { anyCredentialOf, requireUser, type AuthUser } from "./plugins/auth";
+import { hashToken } from "./services/tokens";
 import { projectRoutes } from "./routes/projects";
 import { fileRoutes } from "./routes/files";
 import { shareLinkRoutes } from "./routes/share-links";
 import { collabRoutes } from "./routes/collab";
+import { meRoutes } from "./routes/me";
 
 export interface AppDeps {
   prisma: PrismaClient;
@@ -20,6 +21,12 @@ export interface AppDeps {
   collabSecret: string;
   /** WebSocket URL of the collab server as seen from the browser. */
   collabPublicUrl: string;
+  /**
+   * How many reverse proxies sit in front of the API (0 = none). The web app proxies browser
+   * requests to the API, so with 1 the real client address is the one the proxy appended to
+   * X-Forwarded-For (anything the client put there itself is ignored).
+   */
+  trustProxyHops?: number;
   logger?: boolean;
 }
 
@@ -27,13 +34,26 @@ export interface AppDeps {
 export interface Ctx {
   prisma: PrismaClient;
   user(req: FastifyRequest): Promise<AuthUser>;
+  /** Set cookies with the Secure flag (when the site is served over HTTPS). */
+  secureCookies: boolean;
   parse<T>(schema: ZodType<T>, data: unknown): T;
 }
+
+/**
+ * Trust exactly the first `hops` reverse proxies. Hop 0 is the connection peer (the web app's
+ * proxy); trusting only that hop means anything a client put in X-Forwarded-For itself is ignored.
+ */
+export const trustHops = (hops: number) => (hops > 0 ? (_address: string, hop: number) => hop < hops : false);
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
-  const app = Fastify({ logger: deps.logger ?? false, bodyLimit: 64 * 1024 });
+  const options: FastifyServerOptions = {
+    logger: deps.logger ?? false,
+    bodyLimit: 64 * 1024,
+    trustProxy: trustHops(deps.trustProxyHops ?? 0),
+  };
+  const app = Fastify(options);
 
   await app.register(helmet);
   await app.register(cookie);
@@ -44,8 +64,8 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     max: 600,
     timeWindow: "1 minute",
     keyGenerator: (req) => {
-      const token = sessionTokenOf(req);
-      return token ? `session:${createHash("sha256").update(token).digest("hex")}` : `ip:${req.ip}`;
+      const token = anyCredentialOf(req);
+      return token ? `session:${hashToken(token)}` : `ip:${req.ip}`;
     },
   });
 
@@ -60,7 +80,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   app.setErrorHandler((err, req, reply) => {
-    if (err instanceof HttpError) return reply.code(err.statusCode).send({ error: err.message, details: err.details });
+    if (err instanceof HttpError) {
+      return reply.code(err.statusCode).send({ error: err.message, code: err.code, details: err.details });
+    }
     if (err instanceof ZodError) {
       return reply.code(400).send({
         error: "Invalid input",
@@ -80,12 +102,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const ctx: Ctx = {
     prisma: deps.prisma,
     user: (req) => requireUser(deps.prisma, req),
+    secureCookies: deps.webOrigin.startsWith("https://"),
     parse: (schema, data) => schema.parse(data),
   };
 
   app.get("/health", async () => ({ status: "ok" }));
   await app.register(projectRoutes(ctx), { prefix: "/projects" });
   await app.register(fileRoutes(ctx));
+  await app.register(meRoutes(ctx));
   await app.register(shareLinkRoutes(ctx));
   await app.register(collabRoutes(ctx, { secret: deps.collabSecret, publicUrl: deps.collabPublicUrl }));
 
