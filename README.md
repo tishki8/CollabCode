@@ -4,11 +4,12 @@ A browser-based collaborative code editor for small teams. Open a shared project
 together in real time, run the code, and always see **who wrote what**, like Google Docs,
 but for code, and without depending on anyone's machine being online.
 
-> **Status: Phase 3 of 7 (sharing).** Sign-in, projects, file tree, dashboard, live multi-user
-> editing with named cursors and presence, persistence, and share links with **guest access,
-> invite-only approval, expiry and viewer / commenter / editor roles**. Authorship tracking,
-> review tools (comments, suggestions, checkpoints), code execution and export arrive in later
-> phases. Sections marked *(planned)* describe the target design.
+> **Status: Phase 4 of 7 (authorship tracking).** Sign-in, projects, file tree, live multi-user
+> editing with named cursors, share links with guests / approval / expiry / roles, and now
+> **who wrote what**: a blame view, per-person contribution colours, per-person history with a
+> diff, and a project contribution timeline. Review tools (comments, suggestions, checkpoints),
+> code execution and export arrive in later phases. Sections marked *(planned)* describe the
+> target design.
 
 ## Architecture
 
@@ -69,9 +70,15 @@ port 1234 (the collab WebSocket); change `COLLAB_PUBLIC_URL` if you expose it el
    seconds.
 7. **Expiry:** an expired link shows "This link has expired" instead of a name form. (To try it
    without waiting, create a 1-hour link and move its `expiresAt` into the past in the database.)
-8. Stop and restart the stack (`docker compose restart collab`): reopen the file and the text is
+8. **Who wrote what (Phase 4).** Have Alice and Bob each type on a different line. Hover over a
+   line: a card says who wrote it and when ("and 1 other" if two people wrote on the same line).
+   Press **Contribution colours** to tint each person's text, with their initials in the gutter and
+   a legend. Open the **History** tab, choose a person and a time range, and press *Show what
+   ... changed* for a diff of exactly their additions and removals. Open **Contributions** for a
+   timeline lane per person plus lines added/removed, active time and "lines still theirs".
+9. Stop and restart the stack (`docker compose restart collab`): reopen the file and the text is
    still there. Edits made while briefly offline (e.g. pause the network in dev tools) merge when
-   the connection returns.
+   the connection returns. Hover again: the authors are the same.
 
 ### Option B: local development
 
@@ -210,6 +217,84 @@ Secrets live in environment variables only; `.env` is git-ignored.
 - **Rate limits** are per signed-in/guest session, or per client address for anonymous calls (the
   guest-join endpoint allows 60/min per address so a classroom can join together; the link
   preview is limited per link because the web server makes that call on visitors' behalf).
+
+### Authorship design (Phase 4)
+
+**What is recorded.** Every character in a Yjs document lives in an *item* with a permanent id
+`(clientID, clock)`. Typing in a row is one item, a paste is one item, so the data grows with how
+often authorship *changes*, not with characters. Authorship is the mapping "item id range ->
+authenticated user + server time". It is stored in the `DocEvent` table, one row per **batch** of
+changes by one user (the row also holds the merged Yjs update, so the log can rebuild the file,
+and counts of characters and newlines added/removed). It is never stored inside the document, where
+a client could forge it. The user is always the verified identity of the WebSocket connection (the
+Hocuspocus context loaded from the database), never anything in the update.
+
+**Attribution happens at delivery, not by diffing the document.** The server decodes each incoming
+update *before applying it* and credits the id ranges that are new to the server. The obvious
+alternative, "see which ids appeared in this transaction", is wrong. Yjs holds back an update whose
+dependencies have not arrived (pending structs). If Alice's update arrives before the update it
+builds on, Yjs applies it later, in the transaction triggered by *whoever delivered the missing
+piece*, and a transaction diff credits Alice's text to that person. A unit test reproduces it
+(`authorship.test.ts`, "attribution at delivery, not by diffing the transaction"): the transaction
+that delivers update 1 contains all 6 clocks, including the 3 that update 2 delivered earlier. Deleted text is measured in the same pre-apply step, because by the time Yjs emits its
+`update` event it has already garbage-collected the deleted content.
+
+**ClientID ownership.** The first authenticated user whose connection uses a clientID owns it; the
+claim is persisted (`YClient`, first writer wins, so it also holds across server instances and
+restarts). A clientID is claimed by an awareness (cursor) update or by delivering new items. An
+update that introduces **new** items under a clientID owned by someone else is rejected: the
+document connection is closed (Hocuspocus close reason `Forbidden`, code 4403) and the attempt is
+logged with file, clientID, owner and offender. This stops a user pre-sending text under another
+user's id, which would either steal credit for that text or "squat" the id so the real owner's
+later edits collide with the planted items and are silently dropped by Yjs. Re-sending items that
+are already on record (a normal reconnect sync) is allowed and never re-attributed.
+
+**Batching.** Keystrokes are merged in memory per (file, user, clientID) and written after 1.5 s of
+quiet or at most every 5 s, when someone disconnects, on shutdown, and **before every document
+snapshot** (the authorship extension has a higher hook priority than the database extension, so a
+saved snapshot never contains text whose attribution exists only in memory). Typing 60 characters
+is one or two rows. Trade-offs: other people's fresh text shows up in your blame view after their
+batch is saved plus your next poll (up to about 5 s + 3 s; your own typing is attributed
+instantly); a hard crash can lose up to the last few seconds of attribution (see below); the log
+grows with activity and is not compacted yet.
+
+**Blame is computed in the browser** by walking the live text's items and joining them with the
+attribution ranges (fetched once, then incrementally "after event N"). Each line shows its main
+author (most non-whitespace characters) and "and N others". Hovering is free and always matches the
+screen. Text with no record (written before Phase 4) is shown as *unknown author*, never guessed.
+
+**History and the diff.** The timeline pages through `DocEvent` rows. The per-person diff replays
+the file's events from the beginning onto a document that keeps deleted text, ordered by when each
+batch started, and reports exactly what the person inserted and removed with line numbers. Replay is
+capped at 20,000 events (a clear error asks for an earlier end date) until Phase 5 adds checkpoints
+to replay from.
+
+**Contribution summary.** "Lines" means newline characters typed or removed (so it adds up across
+batches). Active time sums a person's working sessions, bridging gaps under 5 minutes. People are
+listed in order of first activity, never ranked. "Lines still theirs" comes from the last saved
+snapshot of each file.
+
+### Known limitations (authorship)
+
+- **Undo / restore credit.** Undo and redo re-insert text as new items, so restored text is credited
+  to *whoever pressed undo*, even when it was originally someone else's. The same rule applies to
+  deleting and retyping. Giving restored text back to its original author would need Yjs's own undo
+  manager, which y-monaco does not use.
+- **Times are server receive times.** Text typed offline shows the time it synced, because client
+  clocks cannot be trusted.
+- **Crash window.** A hard crash can lose up to ~5 s of buffered attribution. If other users' clients
+  then re-send text that never reached the log, the ownership rule rejects *their* update (the
+  original author's client heals it on reconnect) and closes their document connection until then.
+  Graceful shutdowns flush everything.
+- **ClientID collisions** (two users randomly picking the same 32-bit id, about 1 in 4 billion per
+  pair) would get the second user's connection rejected until they reload.
+- **History** replays from the start (20,000-event cap) and orders batches by start time, so under
+  heavy concurrent editing the line numbers are "as of replay" and approximate.
+- The event log is append-only with no retention or compaction yet; "lines still theirs" skips
+  files over 2 MB and looks at the first 100 files.
+- Several collab servers share ownership through the database, but each keeps its own in-memory
+  "already recorded" ranges (loaded when it opens a file), so a very rare cross-server race is
+  resolved by the database claim.
 
 ### Known limitations
 

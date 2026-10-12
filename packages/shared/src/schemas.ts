@@ -191,3 +191,92 @@ export interface CollabTokenResponse {
   role: Role;
   user: { id: string; name: string; color: string; initials: string; isGuest: boolean };
 }
+
+// ---------- authorship ----------
+
+/** A person as shown next to their work (blame, history, summary). */
+export interface PersonDto {
+  id: string;
+  name: string;
+  isGuest: boolean;
+  /** Their project colour and initials, so identity is never colour alone. */
+  color: string;
+  initials: string;
+}
+
+export interface MemberDto extends PersonDto {
+  role: Role;
+}
+
+/**
+ * Which user first delivered which Yjs item ranges of a file. Compact on purpose: this is fetched
+ * incrementally (`after` = last event id seen) and joined with the live text in the browser.
+ */
+export interface AttributionResponse {
+  users: PersonDto[];
+  /** [clientId, clockStart, clockEnd, userIndex (into `users`), atMs, eventId] */
+  ranges: [number, number, number, number, number, string][];
+  /** Pass as `after` next time. Null if there are no events yet. */
+  lastEventId: string | null;
+  hasMore: boolean;
+}
+
+export interface EventDto {
+  id: string;
+  userId: string;
+  startedAt: string;
+  endedAt: string;
+  added: number;
+  removed: number;
+  linesAdded: number;
+  linesRemoved: number;
+}
+
+export interface EventsResponse {
+  users: PersonDto[];
+  events: EventDto[];
+  /** Pass as `before` for the next (older) page; null when there are no more. */
+  nextBefore: string | null;
+}
+
+export interface HunkDto {
+  kind: "add" | "del";
+  line: number;
+  text: string;
+  /** The text was cut for size. */
+  truncated?: boolean;
+}
+
+export interface HistoryDiffResponse {
+  users: PersonDto[];
+  changes: { eventId: string; userId: string; at: string; hunks: HunkDto[] }[];
+  /** Replay covered this many events from the beginning of the log. */
+  replayedEvents: number;
+}
+
+export interface ContributorSummary extends PersonDto {
+  added: number;
+  removed: number;
+  linesAdded: number;
+  linesRemoved: number;
+  activeMs: number;
+  sessions: number;
+  firstAt: string;
+  lastAt: string;
+  /** Lines whose main author is this person in the saved version of every file. */
+  survivingLines: number;
+}
+
+export interface ContributionsResponse {
+  from: string;
+  to: string;
+  bucketMs: number;
+  /** In order of first activity (deliberately not ranked by amount). */
+  people: ContributorSummary[];
+  lanes: { userId: string; cells: { added: number; removed: number; activeMs: number }[] }[];
+  /** True when there was more activity than could be summarised. */
+  truncated: boolean;
+}
+
+/** Replaying history stops being practical beyond this many events (see README). */
+export const MAX_REPLAY_EVENTS = 20_000;
