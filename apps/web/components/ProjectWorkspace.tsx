@@ -134,10 +134,10 @@ export function ProjectWorkspace({
           )}
         </div>
 
-        {opened.has("history") && (
-          <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden={tab !== "history"} className="min-h-0 flex-1">
+        {tab === "history" && ( // mounted only while shown, so the timeline is always current
+          <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" className="min-h-0 flex-1">
             {active ? (
-              <HistoryPanel key={active.id} projectId={project.id} fileId={active.id} fileName={active.name} />
+              <HistoryPanel key={active.id} projectId={project.id} fileId={active.id} fileName={active.name} role={project.role} onTreeChanged={() => setTreeVersion((v) => v + 1)} />
             ) : (
               <p className="p-6 text-slate-600 dark:text-slate-400">Select a file to see its history.</p>
             )}

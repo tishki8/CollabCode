@@ -137,6 +137,7 @@ model Project {
   files       FileNode[]
   shareLinks  ShareLink[]
   checkpoints Checkpoint[]
+  restores    CheckpointRestore[]
   runs        Run[]
   exports     GitHubExport[]
 }
@@ -307,6 +308,31 @@ model Checkpoint {
   project     Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
   files       CheckpointFile[]
   exports     CheckpointExport[]
+}
+
+// One row per restore that changed something (a restore that finds everything already matching the
+// target is not recorded). This is what the History tab shows, and what "Undo this restore" uses:
+// `autoSaveId` is the hidden automatic checkpoint taken just before the restore.
+model CheckpointRestore {
+  id                 String   @id @default(cuid())
+  projectId          String
+  userId             String
+  kind               String // "restore" | "undo"
+  targetCheckpointId String // the checkpoint restored to (for an undo: the hidden auto-save it went back to)
+  targetName         String // the user-named checkpoint this is about (for an undo: the one that was restored originally)
+  scope              String // "project" | "file"
+  fileId             String? // set when scope = "file"
+  filePath           String? // its path at the time
+  autoSaveId         String // hidden automatic checkpoint taken just before this restore
+  undoOfId           String? // kind = "undo": the restore this undid
+  undoneById         String? // set once an undo of this restore was made
+  restored           Int      @default(0)
+  recreated          Int      @default(0)
+  removed            Int      @default(0)
+  createdAt          DateTime @default(now())
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
 }
 
 model CheckpointFile {

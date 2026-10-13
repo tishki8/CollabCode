@@ -72,7 +72,6 @@ export async function checkpointDtos(
   return rows.map((c) => ({
     id: c.id,
     name: c.name,
-    automatic: c.automatic,
     createdBy: people.get(c.createdById) ?? fallback(c.createdById),
     createdAt: c.createdAt.toISOString(),
     fileCount: c._count.files,

@@ -326,7 +326,8 @@ run("review tools (integration)", () => {
       before = { main: text(fileId).toString(), util: text(otherFileId).toString() };
       const res = await call("editor", "POST", `/projects/${projectId}/checkpoints`, { name: "v1" });
       expect(res.statusCode).toBe(201);
-      expect(res.json()).toMatchObject({ name: "v1", automatic: false, fileCount: 2, createdBy: { id: ids.editor } });
+      expect(res.json()).toMatchObject({ name: "v1", fileCount: 2, createdBy: { id: ids.editor } });
+      expect(res.json()).not.toHaveProperty("automatic");
       cpId = res.json().id;
       const files = await prisma.checkpointFile.findMany({ where: { checkpointId: cpId } });
       const d = new Y.Doc();
@@ -348,7 +349,7 @@ run("review tools (integration)", () => {
       expect((await call("outsider", "POST", `/checkpoints/${cpId}/restore`, {})).statusCode).toBe(404);
     });
 
-    it("restoring one file is an edit credited to the restorer; other files are untouched; a safety checkpoint is made", async () => {
+    it("restoring one file is an edit credited to the restorer; other files are untouched; a hidden automatic save is made", async () => {
       text(fileId).insert(text(fileId).length, "BROKEN = True\n");
       text(otherFileId).insert(0, "KEEP = 2\n");
       edits.length = 0;
@@ -358,16 +359,35 @@ run("review tools (integration)", () => {
       expect(text(fileId).toString()).toBe(before.main);
       expect(text(otherFileId).toString()).toContain("KEEP = 2");
       expect(edits).toEqual([expect.objectContaining({ fileId, userId: ids.owner, origin: "restore" })]);
-      const safety = await prisma.checkpoint.findUniqueOrThrow({ where: { id: res.json().safetyCheckpointId } });
-      expect(safety).toMatchObject({ automatic: true });
-      expect(safety.name).toMatch(/Before restoring/);
-      // the safety checkpoint holds the state from before the restore, so the restore is undoable
+      expect(res.json().status).toBe("restored");
+      const row = await prisma.checkpointRestore.findUniqueOrThrow({ where: { id: res.json().restoreId } });
+      expect(row).toMatchObject({ userId: ids.owner, kind: "restore", targetName: "v1", scope: "file", fileId, filePath: "main.py" });
+      const safety = await prisma.checkpoint.findUniqueOrThrow({ where: { id: row.autoSaveId } });
+      expect(safety.automatic).toBe(true);
+      expect(safety.name).toMatch(/^auto-save before restore · \d{4}-\d{2}-\d{2}T/);
+      expect(safety.name).not.toContain("v1"); // never built from another checkpoint's name
+      // the automatic save holds the state from before the restore
       const f = await prisma.checkpointFile.findUniqueOrThrow({ where: { checkpointId_fileId: { checkpointId: safety.id, fileId } } });
       const d = new Y.Doc();
       Y.applyUpdate(d, new Uint8Array(f.state));
       expect(d.getText("content").toString()).toContain("BROKEN = True");
-      // restoring again changes nothing
-      expect((await call("owner", "POST", `/checkpoints/${cpId}/restore`, { fileId })).json()).toMatchObject({ restored: 0, unchanged: 1 });
+      // it is invisible: not in the list, not openable, not restorable through the checkpoint API
+      const list = (await call("viewer", "GET", `/projects/${projectId}/checkpoints`)).json();
+      expect(list.some((c: { id: string }) => c.id === safety.id)).toBe(false);
+      expect((await call("viewer", "GET", `/checkpoints/${safety.id}`)).statusCode).toBe(404);
+      expect((await call("owner", "POST", `/checkpoints/${safety.id}/restore`, {})).statusCode).toBe(404);
+    });
+
+    it("restoring when the content already matches the target does nothing: no edit, no automatic save, no history entry", async () => {
+      const cps = await prisma.checkpoint.count({ where: { projectId } });
+      const restores = await prisma.checkpointRestore.count({ where: { projectId } });
+      edits.length = 0;
+      const res = await call("owner", "POST", `/checkpoints/${cpId}/restore`, { fileId });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ status: "already", restoreId: null, restored: 0 });
+      expect(edits).toHaveLength(0);
+      expect(await prisma.checkpoint.count({ where: { projectId } })).toBe(cps);
+      expect(await prisma.checkpointRestore.count({ where: { projectId } })).toBe(restores);
     });
 
     it("restoring the whole project brings back deleted files, removes files created later, and restores every file", async () => {
@@ -399,6 +419,114 @@ run("review tools (integration)", () => {
     });
   });
 
+  describe("restore history, undo, and hidden automatic saves", () => {
+    const listCps = async () => (await call("viewer", "GET", `/projects/${projectId}/checkpoints`)).json() as { id: string; name: string }[];
+    let cpId = "";
+    let original = "";
+
+    it("a project restore is recorded with who, what and scope; \"already\" for the whole project too", async () => {
+      text(otherFileId).delete(0, text(otherFileId).length);
+      text(otherFileId).insert(0, "X = 1\n");
+      original = text(fileId).toString();
+      cpId = (await call("owner", "POST", `/projects/${projectId}/checkpoints`, { name: "introduction" })).json().id;
+      // nothing changed since: restoring the whole project is a no-op
+      expect((await call("owner", "POST", `/checkpoints/${cpId}/restore`, {})).json().status).toBe("already");
+
+      text(fileId).insert(0, "# oops\n");
+      const res = await call("owner", "POST", `/checkpoints/${cpId}/restore`, {});
+      expect(res.json()).toMatchObject({ status: "restored", restored: 1 });
+      expect(text(fileId).toString()).toBe(original);
+
+      const events = (await call("viewer", "GET", `/files/${fileId}/restores`)).json();
+      expect(events[0]).toMatchObject({ kind: "restore", targetName: "introduction", scope: "project", filePath: null, undone: false, user: { id: ids.owner } });
+      expect((await call("outsider", "GET", `/files/${fileId}/restores`)).statusCode).toBe(404);
+    });
+
+    it("a file-scope restore shows the file; it appears for that file but not for other files", async () => {
+      text(fileId).insert(text(fileId).length, "# more\n");
+      expect((await call("owner", "POST", `/checkpoints/${cpId}/restore`, { fileId })).json().status).toBe("restored");
+      const mine = (await call("viewer", "GET", `/files/${fileId}/restores`)).json();
+      expect(mine[0]).toMatchObject({ scope: "file", filePath: "main.py", targetName: "introduction" });
+      const other = (await call("viewer", "GET", `/files/${otherFileId}/restores`)).json();
+      expect(other.some((e: { filePath: string | null }) => e.filePath === "main.py")).toBe(false); // only project-wide ones, not main.py's own
+      expect(other.some((e: { scope: string }) => e.scope === "project")).toBe(true);
+    });
+
+    it("Undo this restore brings back the exact previous content, is itself a restore event, and its automatic save stays hidden", async () => {
+      const broken = original + "BROKEN = True\nmore = 2\n";
+      text(fileId).delete(0, text(fileId).length);
+      text(fileId).insert(0, broken);
+      text(otherFileId).insert(text(otherFileId).length, "Y = 2\n");
+      const otherBefore = text(otherFileId).toString();
+      const res = await call("owner", "POST", `/checkpoints/${cpId}/restore`, {});
+      expect(res.json().status).toBe("restored");
+      expect(text(fileId).toString()).toBe(original);
+      expect(text(otherFileId).toString()).toBe("X = 1\n");
+
+      const undo = await call("owner", "POST", `/restores/${res.json().restoreId}/undo`);
+      expect(undo.statusCode).toBe(200);
+      expect(undo.json().status).toBe("restored");
+      expect(text(fileId).toString()).toBe(broken); // exactly what it was before the restore
+      expect(text(otherFileId).toString()).toBe(otherBefore);
+      expect(edits.at(-1)).toMatchObject({ userId: ids.owner, origin: "restore" });
+
+      const events = (await call("viewer", "GET", `/files/${fileId}/restores`)).json();
+      expect(events[0]).toMatchObject({ id: undo.json().restoreId, kind: "undo", targetName: "introduction", scope: "project", undone: false });
+      expect(events.find((e: { id: string }) => e.id === res.json().restoreId).undone).toBe(true); // its button is gone
+      // undone once: not again
+      expect((await call("owner", "POST", `/restores/${res.json().restoreId}/undo`)).statusCode).toBe(409);
+
+      // ...but the undo can itself be undone (redo): back to the restored content
+      const redo = await call("owner", "POST", `/restores/${undo.json().restoreId}/undo`);
+      expect(redo.json().status).toBe("restored");
+      expect(text(fileId).toString()).toBe(original);
+    });
+
+    it("undoing a file-scope restore restores just that file", async () => {
+      const broken = original + "ONLY_HERE = 1\n";
+      text(fileId).insert(text(fileId).length, "ONLY_HERE = 1\n");
+      text(otherFileId).insert(0, "# untouched by the undo\n");
+      const r = await call("owner", "POST", `/checkpoints/${cpId}/restore`, { fileId });
+      expect(text(fileId).toString()).toBe(original);
+      text(otherFileId).insert(0, "# edited after\n");
+      const keep = text(otherFileId).toString();
+      expect((await call("owner", "POST", `/restores/${r.json().restoreId}/undo`)).json().status).toBe("restored");
+      expect(text(fileId).toString()).toBe(broken);
+      expect(text(otherFileId).toString()).toBe(keep);
+      text(fileId).delete(original.length, "ONLY_HERE = 1\n".length);
+    });
+
+    it("only the owner can undo; outsiders get 404", async () => {
+      const [e] = (await call("viewer", "GET", `/files/${fileId}/restores`)).json();
+      for (const who of ["editor", "commenter", "viewer"]) expect((await call(who, "POST", `/restores/${e.id}/undo`)).statusCode).toBe(403);
+      expect((await call("outsider", "POST", `/restores/${e.id}/undo`)).statusCode).toBe(404);
+      expect((await call("owner", "POST", `/restores/nope/undo`)).statusCode).toBe(404);
+    });
+
+    it("automatic saves are never listed, never named after another checkpoint, and never pruned; user checkpoints are not capped", async () => {
+      const shown = await listCps();
+      const all = await prisma.checkpoint.findMany({ where: { projectId } });
+      const auto = all.filter((c) => c.automatic);
+      expect(auto.length).toBeGreaterThanOrEqual(5); // several restores/undos happened above
+      expect(shown.some((c) => auto.some((a) => a.id === c.id))).toBe(false);
+      const userNames = all.filter((c) => !c.automatic).map((c) => c.name);
+      expect(userNames).toContain("introduction");
+      for (const a of auto) {
+        expect(a.name).toMatch(/^auto-save before restore · \d{4}-\d{2}-\d{2}T[\d:.]+Z$/); // fixed text + timestamp only
+        for (const n of userNames) expect(a.name).not.toContain(n);
+      }
+      // and no name nests another checkpoint's name
+      for (const c of all) for (const o of all) if (c.id !== o.id && o.name.length > 3) expect(c.name.includes(o.name)).toBe(false);
+      // nothing prunes them
+      expect(await prisma.checkpoint.count({ where: { projectId, automatic: true } })).toBe(auto.length);
+
+      // no cap on user-named checkpoints
+      await prisma.checkpoint.createMany({ data: Array.from({ length: 205 }, (_, i) => ({ projectId, name: `bulk ${i}`, createdById: ids.owner! })) });
+      expect((await listCps()).length).toBeGreaterThan(205);
+      expect((await call("editor", "POST", `/projects/${projectId}/checkpoints`, { name: "one more" })).statusCode).toBe(201);
+    });
+  });
+
   describe("replay data", () => {
     const evt = (userId: string, update: Uint8Array, t: number) =>
       prisma.docEvent.create({
@@ -420,6 +548,12 @@ run("review tools (integration)", () => {
       await evt(ids.owner!, ups[2]!, 3000);
 
       const points = (await call("viewer", "GET", `/files/${fileId}/replay-points`)).json();
+      // only user-named checkpoints are offered, never the hidden automatic saves
+      const autoIds = (await prisma.checkpoint.findMany({ where: { projectId, automatic: true }, select: { id: true } })).map((c) => c.id);
+      expect(autoIds.length).toBeGreaterThan(0);
+      expect(points.some((p: { checkpointId: string | null }) => p.checkpointId && autoIds.includes(p.checkpointId))).toBe(false);
+      expect(points.every((p: { name: string }) => !p.name.startsWith("auto-save"))).toBe(true);
+      expect((await call("viewer", "GET", `/files/${fileId}/replay?checkpointId=${autoIds[0]}`)).statusCode).toBe(404);
       expect(points[0]).toMatchObject({ checkpointId: null, events: 3 });
       expect(points.find((p: { name: string }) => p.name === "mid")).toMatchObject({ checkpointId: cp.id, events: 1 });
 

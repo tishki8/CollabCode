@@ -5,7 +5,6 @@ import type { PersonDto } from "../schemas";
 export const MAX_SUGGESTION_TEXT = 20_000;
 export const MAX_COMMENT_LENGTH = 4_000;
 export const MAX_CHECKPOINT_NAME = 80;
-export const MAX_CHECKPOINTS_PER_PROJECT = 200;
 
 // A base64-encoded Yjs relative position is ~10-30 bytes; this is generous and bounds abuse.
 const anchor = z.string().min(1).max(200).regex(/^[A-Za-z0-9+/=]+$/);
@@ -72,10 +71,10 @@ export interface ThreadDto {
   comments: CommentDto[];
 }
 
+/** A user-named checkpoint. (Automatic saves taken before restores are never listed.) */
 export interface CheckpointDto {
   id: string;
   name: string;
-  automatic: boolean;
   createdBy: PersonDto;
   createdAt: string;
   fileCount: number;
@@ -86,12 +85,31 @@ export interface CheckpointDetailDto extends CheckpointDto {
 }
 
 export interface RestoreResultDto {
-  /** The safety checkpoint made right before restoring, so the restore can be undone. */
-  safetyCheckpointId: string;
+  /** "already": the current content already matches the target; nothing was restored or saved. */
+  status: "restored" | "already";
+  /** The history entry of this restore (not set when status is "already"). */
+  restoreId: string | null;
   restored: number;
   recreated: number;
   removed: number;
-  unchanged: number;
+}
+
+/** A restore (or undo of one) as shown in the History tab. */
+export interface RestoreEventDto {
+  id: string;
+  kind: "restore" | "undo";
+  user: PersonDto;
+  /** The user-named checkpoint this is about. */
+  targetName: string;
+  scope: "project" | "file";
+  /** The file's path when scope is "file". */
+  filePath: string | null;
+  createdAt: string;
+  /** Already undone: the Undo button is gone. */
+  undone: boolean;
+  restored: number;
+  recreated: number;
+  removed: number;
 }
 
 export interface ReplayPointDto {

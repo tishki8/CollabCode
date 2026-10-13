@@ -70,10 +70,15 @@ export function CheckpointsPanel({
     try {
       const body = confirm.scope === "file" && activeFile ? { fileId: activeFile.id } : {};
       const r = await api<RestoreResultDto>("POST", `/checkpoints/${confirm.checkpoint.id}/restore`, body);
+      if (r.status === "already") {
+        setNotice("Already at this checkpoint. Nothing was changed.");
+        setConfirm(null);
+        return;
+      }
       const parts = [`${r.restored} file${r.restored === 1 ? "" : "s"} restored`];
       if (r.recreated) parts.push(`${r.recreated} brought back`);
       if (r.removed) parts.push(`${r.removed} removed`);
-      setNotice(`Restored “${confirm.checkpoint.name}”: ${parts.join(", ")}. A safety checkpoint was saved first.`);
+      setNotice(`Restored “${confirm.checkpoint.name}”: ${parts.join(", ")}. You can undo this from the History tab.`);
       setConfirm(null);
       onTreeChanged();
       await load();
@@ -117,7 +122,7 @@ export function CheckpointsPanel({
             {confirm.scope === "project"
               ? <>Restore the <strong>whole project</strong> to “{confirm.checkpoint.name}”? Files created since then will be removed and deleted files brought back.</>
               : <>Restore <strong>{activeFile?.name}</strong> to “{confirm.checkpoint.name}”?</>}{" "}
-            A safety checkpoint is saved first, and the restore is recorded as your edit.
+            The current content is saved automatically first (you can undo from the History tab), and the restore is recorded as your edit.
           </p>
           <div className="mt-2 flex gap-2">
             <button type="button" className={`${btn} border-amber-700`} disabled={busy} onClick={restore} data-testid="restore-confirm-yes">
@@ -138,7 +143,6 @@ export function CheckpointsPanel({
             <li key={c.id} className="flex flex-col gap-1 py-2" data-testid="checkpoint-item">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <strong data-testid="checkpoint-name">{c.name}</strong>
-                {c.automatic && <span className="rounded border border-slate-400 px-1.5 text-xs">automatic</span>}
                 <span className="text-xs text-slate-600 dark:text-slate-400">
                   <time dateTime={c.createdAt} title={formatAbs(c.createdAt)}>{formatAgo(Date.parse(c.createdAt))}</time> · {c.fileCount} file{c.fileCount === 1 ? "" : "s"}
                 </span>

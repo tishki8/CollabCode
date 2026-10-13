@@ -226,7 +226,7 @@ test.describe("Phase 5: comments", () => {
 });
 
 test.describe("Phase 5: checkpoints", () => {
-  test("Alice creates a checkpoint, breaks the file, and restores it; the restore is her edit and a safety checkpoint is saved", async ({ browser }) => {
+  test("restore shows up in History with who, target and scope; Undo brings back the exact previous content; automatic saves stay hidden", async ({ browser }) => {
     const alice = await signIn(browser, "alice");
     await createProject(alice.page, `Checkpoint ${Date.now()}`);
     await connected(alice.page);
@@ -236,30 +236,45 @@ test.describe("Phase 5: checkpoints", () => {
 
     await alice.page.getByTestId("tab-checkpoints").click();
     await expect(alice.page.getByTestId("checkpoints-empty")).toBeVisible();
-    await alice.page.getByLabel("Checkpoint name").fill("First version");
+    await alice.page.getByLabel("Checkpoint name").fill("introduction");
     await alice.page.getByTestId("checkpoint-create").click();
-    await expect(alice.page.getByTestId("checkpoint-notice")).toContainText("First version");
+    await expect(alice.page.getByTestId("checkpoint-notice")).toContainText("introduction");
     await expect(alice.page.getByTestId("checkpoint-item")).toHaveCount(1);
 
-    // break the file
+    // nothing has changed since: restoring does nothing at all
+    await alice.page.getByTestId("restore-project").click();
+    await alice.page.getByTestId("restore-confirm-yes").click();
+    await expect(alice.page.getByTestId("checkpoint-notice")).toHaveText("Already at this checkpoint. Nothing was changed.");
+    await alice.page.getByTestId("tab-history").click();
+    await expect(alice.page.getByTestId("restore-events-section")).toHaveCount(0); // no history entry was made
     await alice.page.getByTestId("tab-editor").click();
+
+    // break the file
     await typeInEditor(alice.page, "\nBROKEN = True");
     await expect.poll(() => editorText(alice.page)).toBe("version = 1\nBROKEN = True");
     await serverHasTyped(alice.page, "version = 1\nBROKEN = True".length);
 
     // restore the whole project (with a confirmation step)
     await alice.page.getByTestId("tab-checkpoints").click();
-    await alice.page.getByTestId("checkpoint-item").filter({ hasText: "First version" }).getByTestId("restore-project").click();
+    await alice.page.getByTestId("restore-project").click();
     await expect(alice.page.getByTestId("restore-confirm")).toContainText("whole project");
     await alice.page.getByTestId("restore-confirm-yes").click();
-    await expect(alice.page.getByTestId("checkpoint-notice")).toContainText("Restored “First version”");
-    await expect(alice.page.getByTestId("checkpoint-item")).toHaveCount(2); // + the automatic safety checkpoint
-    await expect(alice.page.getByTestId("checkpoint-item").filter({ hasText: "Before restoring" })).toContainText("automatic");
-
+    await expect(alice.page.getByTestId("checkpoint-notice")).toContainText("Restored “introduction”");
+    // the automatic save is not listed: still exactly the one named checkpoint
+    await expect(alice.page.getByTestId("checkpoint-item")).toHaveCount(1);
+    await expect(alice.page.getByTestId("checkpoint-list")).not.toContainText("auto-save");
     await alice.page.getByTestId("tab-editor").click();
     await expect.poll(() => editorText(alice.page)).toBe("version = 1");
 
-    // the restore is in the history, credited to Alice
+    // History: who restored what, and the scope
+    await alice.page.getByTestId("tab-history").click();
+    const restoreEvent = alice.page.getByTestId("restore-event");
+    await expect(restoreEvent).toHaveCount(1);
+    await expect(restoreEvent).toContainText("Alice Demo");
+    await expect(restoreEvent.getByTestId("restore-event-text")).toHaveText("restored checkpoint “introduction” (whole project)");
+    await expect(restoreEvent.locator("time")).toBeVisible();
+
+    // the change itself is in the timeline too, credited to Alice
     await expect(async () => {
       await alice.page.getByTestId("tab-editor").click();
       await alice.page.getByTestId("tab-history").click();
@@ -268,14 +283,54 @@ test.describe("Phase 5: checkpoints", () => {
       await expect(ev).toContainText("Alice Demo");
     }).toPass(SLOW);
 
-    // undo the restore from the safety checkpoint: the broken text comes back
-    await alice.page.getByTestId("tab-checkpoints").click();
-    await alice.page.getByTestId("checkpoint-item").filter({ hasText: "Before restoring" }).getByTestId("restore-file").click();
-    await alice.page.getByTestId("restore-confirm-yes").click();
-    await expect(alice.page.getByTestId("checkpoint-notice")).toContainText("Restored");
+    // Undo this restore: the exact previous content is back
+    await restoreEvent.getByTestId("restore-undo").click();
     await alice.page.getByTestId("tab-editor").click();
     await expect.poll(() => editorText(alice.page)).toBe("version = 1\nBROKEN = True");
+    await alice.page.getByTestId("tab-history").click();
+    const events = alice.page.getByTestId("restore-event");
+    await expect(events).toHaveCount(2);
+    await expect(events.first().getByTestId("restore-event-text")).toHaveText("undid the restore of checkpoint “introduction” (whole project)");
+    await expect(events.last().getByTestId("restore-undone")).toBeVisible(); // the original can't be undone twice
+    await expect(events.last().getByTestId("restore-undo")).toHaveCount(0);
 
+    // the undo is itself a restore event and has its own hidden automatic save: it can be undone again
+    await events.first().getByTestId("restore-undo").click();
+    await alice.page.getByTestId("tab-editor").click();
+    await expect.poll(() => editorText(alice.page)).toBe("version = 1");
+
+    // still only the one user-named checkpoint, and "Start from" offers only it (plus the beginning)
+    await alice.page.getByTestId("tab-checkpoints").click();
+    await expect(alice.page.getByTestId("checkpoint-item")).toHaveCount(1);
+    await alice.page.getByTestId("tab-replay").click();
+    const options = alice.page.getByTestId("replay-start").locator("option");
+    await expect(options).toHaveCount(2, SLOW);
+    expect(await options.allTextContents()).toEqual([expect.stringContaining("The beginning"), expect.stringContaining("introduction")]);
+
+    await alice.context.close();
+  });
+
+  test("restoring one file is recorded with that file's name", async ({ browser }) => {
+    const alice = await signIn(browser, "alice");
+    await createProject(alice.page, `FileRestore ${Date.now()}`);
+    await connected(alice.page);
+    await typeInEditor(alice.page, "a = 1");
+    await expect.poll(() => editorText(alice.page)).toBe("a = 1");
+    await serverHasTyped(alice.page, 5);
+    await alice.page.getByTestId("tab-checkpoints").click();
+    await alice.page.getByLabel("Checkpoint name").fill("start");
+    await alice.page.getByTestId("checkpoint-create").click();
+    await expect(alice.page.getByTestId("checkpoint-item")).toHaveCount(1);
+    await alice.page.getByTestId("tab-editor").click();
+    await typeInEditor(alice.page, "\nb = 2");
+    await serverHasTyped(alice.page, "a = 1\nb = 2".length);
+
+    await alice.page.getByTestId("tab-checkpoints").click();
+    await alice.page.getByTestId("restore-file").click();
+    await alice.page.getByTestId("restore-confirm-yes").click();
+    await expect(alice.page.getByTestId("checkpoint-notice")).toContainText("Restored");
+    await alice.page.getByTestId("tab-history").click();
+    await expect(alice.page.getByTestId("restore-event-text")).toHaveText("restored checkpoint “start” (main.py)");
     await alice.context.close();
   });
 

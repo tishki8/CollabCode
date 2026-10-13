@@ -86,8 +86,9 @@ port 1234 (the collab WebSocket); change `COLLAB_PUBLIC_URL` if you expose it el
    commented text: the thread and any open suggestion stay on their text.
 10. **Checkpoints and replay (Phase 5).** Open the **Checkpoints** tab, name a checkpoint, then
    break the file. Press **Restore project** (owner only) and confirm: the file is back, the History
-   tab shows a "restore" event credited to you, and a "Before restoring ..." checkpoint was saved
-   so you can undo it. Open **Replay**: press play, change the speed, drag the slider, pick a
+   tab shows "Alice restored checkpoint “...” (whole project)" with an **Undo this restore** button
+   (press it and the exact previous content returns). Press Restore again: "Already at this
+   checkpoint". Open **Replay**: press play, change the speed, drag the slider, pick a
    person under *Step through changes by*, or *Start from* a checkpoint.
 11. Stop and restart the stack (`docker compose restart collab`): reopen the file and the text is
    still there. Edits made while briefly offline (e.g. pause the network in dev tools) merge when
@@ -381,13 +382,32 @@ included), then copies the snapshots. A checkpoint may contain a few events newe
 event id; replaying them on top later is harmless because applying a Yjs update twice changes
 nothing. **Restore** (owner only, as the permission matrix already said) works on the whole project or
 on the open file, behind an explicit confirmation. A restore:
-  1. first saves an automatic safety checkpoint ("Before restoring ..."), so it can be undone from
-     the same screen;
-  2. sets each file's text to the checkpoint's with the *smallest single replacement* (common start
+  1. first checks whether anything would change. If the current content (and, for the whole project,
+     the set of files) already matches the target, **nothing happens**: no edit, no automatic save, no
+     history entry, and the UI says "Already at this checkpoint";
+  2. otherwise takes a hidden **automatic save** of the whole project (see below);
+  3. sets each file's text to the checkpoint's with the *smallest single replacement* (common start
      and end untouched), applied by the collab server as an edit **credited to the restorer** with
      event origin `restore`, so it is in the history and in blame like any other change;
-  3. for the whole project, brings back files that were deleted since (renaming to `name (restored)`
-     on a clash) and removes (soft-deletes, so history keeps working) files created since.
+  4. for the whole project, brings back files that were deleted since (renaming to `name (restored)`
+     on a clash) and removes (soft-deletes, so history keeps working) files created since;
+  5. records the restore (`CheckpointRestore`: who, which checkpoint, whole project or which file,
+     and the id of the automatic save).
+
+*Automatic saves are hidden plumbing.* The Checkpoints list and replay's "Start from" show only
+checkpoints a person named. Automatic saves are ordinary checkpoint rows flagged `automatic`; their
+name is fixed text plus a timestamp (`auto-save before restore · 2026-...Z`), never built from any
+other checkpoint's name, so names cannot nest ("Before restoring Before restoring ..."). The API
+treats them as nonexistent (404 for listing details, restoring, or replaying from them). They are
+never pruned, and there is no cap on named checkpoints either; they cost storage (see limitations).
+
+*History and undo.* The History tab has a **Restores** section: "Alice restored checkpoint
+“introduction” (whole project / main.py) · time". **Undo this restore** (owner only) restores the
+hidden automatic save taken just before that restore, with the same scope. Undoing is itself a restore:
+it gets its own history entry ("undid the restore of checkpoint ...", credited to whoever pressed it),
+its own hidden automatic save, and its own Undo button (so you can redo). A restore can be undone
+once. If the content already matches the automatic save, undo says "Already at that content" and
+changes nothing.
 Folder renames and moves are not reverted (restore works per file id).
 
 **Session replay.** The Replay tab plays a file's history from the event log: play/pause, speed
@@ -431,9 +451,11 @@ WebSocket, so **do not expose `/internal` through your reverse proxy** (only `/`
 - **Comments cannot be edited or deleted** yet, and there is no @-mentioning or notifications.
 - **Restore is owner-only** (the permission matrix since Phase 1); editors can create checkpoints.
   Folder structure changes (renames, moves) are not reverted by a restore, and a whole-project
-  restore removes files created since the checkpoint (undoable from the safety checkpoint).
-- **Checkpoints store full snapshots** of every file each time (no deduplication), capped at 200 per
-  project, so very large projects with many checkpoints use real space.
+  restore removes files created since the checkpoint (undoable with *Undo this restore*).
+- **Checkpoints store full snapshots** of every file each time (no deduplication). Named checkpoints
+  are unlimited and automatic saves (one per restore or undo that changed something) are never
+  pruned, so a long-lived project with many restores uses real space. Undo goes back to the
+  automatic save: it restores file contents, deletions and creations, but not folder renames or moves.
 - **Replay** shows text only (no syntax colouring), steps through *saved* events (the last few seconds
   of typing appear after the 1.5-5 s batch is written, or immediately when a checkpoint is made), and
   shows at most 4,000 lines.
