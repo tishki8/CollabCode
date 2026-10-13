@@ -41,6 +41,22 @@ async function selectText(page: Page, needle: string) {
   await expect(page.getByTestId("selection-box")).toContainText(needle.slice(0, 20));
 }
 
+/**
+ * Wait until the SERVER has recorded at least `chars` typed characters of the first file. A checkpoint
+ * snapshots what the server has received, so a test that creates one right after typing must wait for
+ * the keystrokes to arrive (on a slow CI machine they can still be in flight when the click happens).
+ */
+async function serverHasTyped(page: Page, chars: number) {
+  const projectId = new URL(page.url()).pathname.split("/")[2];
+  await expect
+    .poll(async () => {
+      const files = await (await page.request.get(`/api/v1/projects/${projectId}/files`)).json();
+      const res = await (await page.request.get(`/api/v1/files/${files[0].id}/events?limit=200`)).json();
+      return (res.events as { added: number }[]).reduce((n, e) => n + e.added, 0);
+    }, { timeout: 25_000 })
+    .toBeGreaterThanOrEqual(chars);
+}
+
 const sidebar = (page: Page) => page.getByTestId("review-sidebar");
 
 test.describe("Phase 5: suggestions", () => {
@@ -216,6 +232,7 @@ test.describe("Phase 5: checkpoints", () => {
     await connected(alice.page);
     await typeInEditor(alice.page, "version = 1");
     await expect.poll(() => editorText(alice.page)).toBe("version = 1");
+    await serverHasTyped(alice.page, "version = 1".length);
 
     await alice.page.getByTestId("tab-checkpoints").click();
     await expect(alice.page.getByTestId("checkpoints-empty")).toBeVisible();
@@ -228,6 +245,7 @@ test.describe("Phase 5: checkpoints", () => {
     await alice.page.getByTestId("tab-editor").click();
     await typeInEditor(alice.page, "\nBROKEN = True");
     await expect.poll(() => editorText(alice.page)).toBe("version = 1\nBROKEN = True");
+    await serverHasTyped(alice.page, "version = 1\nBROKEN = True".length);
 
     // restore the whole project (with a confirmation step)
     await alice.page.getByTestId("tab-checkpoints").click();
