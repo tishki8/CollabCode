@@ -4,3 +4,12 @@
 body { @apply bg-white text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100; }
 /* Visible keyboard focus everywhere */
 :focus-visible { @apply outline-2 outline-offset-2 outline-blue-600 dark:outline-blue-400; }
+
+/* Review tools: suggestions and comment threads drawn over the editor text (the editor is always dark). The tag after each range
+   carries the author/meaning in words, so colour is never the only cue. */
+.cc-sugg { background-color: rgb(34 197 94 / 0.22); border-bottom: 2px dashed rgb(21 128 61); }
+.cc-sugg-tag { color: rgb(134 239 172); font: 600 11px system-ui, sans-serif; margin-left: 4px; }
+.cc-thread { background-color: rgb(250 204 21 / 0.18); border-bottom: 2px dotted rgb(202 138 4); }
+.cc-thread-resolved { border-bottom: 1px dotted rgb(113 113 122); }
+.cc-thread-tag { color: rgb(253 224 71); font: 600 11px system-ui, sans-serif; margin-left: 4px; }
+.cc-focus { outline: 2px solid rgb(59 130 246); }

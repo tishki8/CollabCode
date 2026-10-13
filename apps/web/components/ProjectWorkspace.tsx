@@ -8,6 +8,9 @@ import { PresencePanel } from "./PresencePanel";
 import { SharePanel } from "./SharePanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { ContributionsPanel } from "./ContributionsPanel";
+import { CheckpointsPanel } from "./CheckpointsPanel";
+import { ReplayPanel } from "./ReplayPanel";
+import { IdentityGuard } from "./IdentityGuard";
 import { pathOfNode } from "@/lib/tree-path";
 
 // Monaco only works in the browser.
@@ -28,10 +31,12 @@ function initialFileId(project: ProjectDetail, nodes: FileNodeDto[], wanted: str
   );
 }
 
-type Tab = "editor" | "history" | "contributions";
+type Tab = "editor" | "history" | "replay" | "checkpoints" | "contributions";
 const TABS: { id: Tab; label: string }[] = [
   { id: "editor", label: "Editor" },
   { id: "history", label: "History" },
+  { id: "replay", label: "Replay" },
+  { id: "checkpoints", label: "Checkpoints" },
   { id: "contributions", label: "Contributions" },
 ];
 
@@ -51,6 +56,7 @@ export function ProjectWorkspace({
   const [activeFileId, setActiveFileId] = useState<string | null>(() => initialFileId(project, initialNodes, requestedFileId));
   const active = nodes.find((n) => n.id === activeFileId && n.type === "FILE") ?? null;
   const [tab, setTab] = useState<Tab>("editor");
+  const [treeVersion, setTreeVersion] = useState(0);
   // Panels are created the first time they are opened, then kept (the editor must stay connected).
   const [opened, setOpened] = useState<Set<Tab>>(new Set(["editor"]));
   const show = (t: Tab) => {
@@ -71,6 +77,8 @@ export function ProjectWorkspace({
   }, [nodes, activeFileId]);
 
   return (
+    <>
+    <IdentityGuard userId={currentUserId} />
     <main id="main" className="grid h-[calc(100vh-3.5rem)] grid-cols-[19rem_1fr]">
       <aside aria-label="Project sidebar" className="flex flex-col gap-6 overflow-y-auto border-r border-slate-200 p-4 dark:border-slate-800">
         <div className="flex flex-col gap-3">
@@ -94,6 +102,7 @@ export function ProjectWorkspace({
           activeFileId={activeFileId}
           onOpenFile={openFile}
           onNodesChange={setNodes}
+          refreshKey={treeVersion}
         />
         <PresencePanel projectId={project.id} currentUserId={currentUserId} activeFileId={active?.id ?? null} nodes={nodes} />
       </aside>
@@ -125,13 +134,34 @@ export function ProjectWorkspace({
           )}
         </div>
 
-        {opened.has("history") && (
-          <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden={tab !== "history"} className="min-h-0 flex-1">
+        {tab === "history" && ( // mounted only while shown, so the timeline is always current
+          <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" className="min-h-0 flex-1">
             {active ? (
-              <HistoryPanel key={active.id} projectId={project.id} fileId={active.id} fileName={active.name} />
+              <HistoryPanel key={active.id} projectId={project.id} fileId={active.id} fileName={active.name} role={project.role} onTreeChanged={() => setTreeVersion((v) => v + 1)} />
             ) : (
               <p className="p-6 text-slate-600 dark:text-slate-400">Select a file to see its history.</p>
             )}
+          </div>
+        )}
+
+        {tab === "replay" && ( // mounted only while shown, so it always loads the latest history
+          <div id="panel-replay" role="tabpanel" aria-labelledby="tab-replay" className="min-h-0 flex-1">
+            {active ? (
+              <ReplayPanel key={active.id} fileId={active.id} fileName={active.name} />
+            ) : (
+              <p className="p-6 text-slate-600 dark:text-slate-400">Select a file to replay it.</p>
+            )}
+          </div>
+        )}
+
+        {tab === "checkpoints" && (
+          <div id="panel-checkpoints" role="tabpanel" aria-labelledby="tab-checkpoints" className="min-h-0 flex-1">
+            <CheckpointsPanel
+              projectId={project.id}
+              role={project.role}
+              activeFile={active ? { id: active.id, name: active.name } : null}
+              onTreeChanged={() => setTreeVersion((v) => v + 1)}
+            />
           </div>
         )}
 
@@ -142,5 +172,6 @@ export function ProjectWorkspace({
         )}
       </section>
     </main>
+    </>
   );
 }

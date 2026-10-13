@@ -142,3 +142,20 @@ export function evilInsert(text: string) {
   return Y.encodeStateAsUpdate(d);
 }
 
+
+/** Call one of the collab server's signed /internal endpoints, the way the API does. */
+export async function internalPost(port: number, secret: string, path: string, body: unknown, opts: { signature?: string; timestamp?: string } = {}) {
+  const { signInternal } = await import("@collabcode/shared/internal-auth");
+  const raw = JSON.stringify(body);
+  const signed = signInternal(secret, raw);
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-internal-timestamp": opts.timestamp ?? signed.timestamp,
+      "x-internal-signature": opts.signature ?? signed.signature,
+    },
+    body: raw,
+  });
+  return { status: res.status, json: (await res.json().catch(() => ({}))) as Record<string, unknown> & { status?: string; replaced?: string } };
+}

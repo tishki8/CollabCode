@@ -26,6 +26,8 @@ export interface LineDescription {
   mainIsGuest: boolean;
   /** When the main author last wrote on this line (ms), if known. */
   at: number | null;
+  /** The main author's text here was credited after crash recovery. */
+  recovered: boolean;
   /** Number of other authors besides the main one. */
   others: number;
   otherNames: string[];
@@ -39,6 +41,7 @@ export function describeLine(line: LineBlame, personOf: (userId: string) => Pers
     mainName: mainPerson?.name ?? null,
     mainIsGuest: mainPerson?.isGuest ?? false,
     at: main?.lastAt ?? null,
+    recovered: main?.recovered ?? false,
     others: line.others,
     otherNames: line.authors.slice(1).map((a) => label(a.user).name),
   };
@@ -60,6 +63,7 @@ export function lineHoverMarkdown(
   const who = `**${escapeMarkdown(d.mainName!)}**${d.mainIsGuest ? " (guest)" : ""}`;
   parts.push(d.mainName === "Unknown author" ? "Author unknown: written before authorship tracking" : `${who} wrote this line`);
   if (d.at !== null) parts.push(`${formatAgo(d.at, now)} (${formatAbs(d.at)})`);
+  if (d.recovered) parts.push("_attributed after recovery: the author's own record was lost in a crash and someone else re-sent this text_");
   if (d.others > 0) {
     const shown = d.otherNames.slice(0, 3).map(escapeMarkdown).join(", ");
     const more = d.otherNames.length > 3 ? ` and ${d.otherNames.length - 3} more` : "";

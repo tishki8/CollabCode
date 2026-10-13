@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { EventDto, EventsResponse, HistoryDiffResponse, MemberDto, PersonDto } from "@collabcode/shared";
-import { formatAgo } from "@collabcode/shared";
+import type { EventDto, EventsResponse, HistoryDiffResponse, MemberDto, PersonDto, RestoreEventDto, RestoreResultDto, Role } from "@collabcode/shared";
+import { can, formatAgo } from "@collabcode/shared";
 import { api, ApiRequestError } from "@/lib/client-api";
+import { errorText, usePolled } from "@/lib/review";
 import { formatAbs, toLocalInput } from "@/lib/time";
 import { PersonChip } from "./PersonChip";
 
@@ -15,7 +16,19 @@ const PRESET_MS: Record<"1h" | "24h" | "7d", number> = { "1h": 3_600_000, "24h":
  * The change timeline of one file, filterable by person and time range, and a diff of exactly what
  * the chosen person added and removed in that range.
  */
-export function HistoryPanel({ projectId, fileId, fileName }: { projectId: string; fileId: string; fileName: string }) {
+export function HistoryPanel({
+  projectId,
+  fileId,
+  fileName,
+  role,
+  onTreeChanged,
+}: {
+  projectId: string;
+  fileId: string;
+  fileName: string;
+  role: Role;
+  onTreeChanged(): void;
+}) {
   const [members, setMembers] = useState<MemberDto[]>([]);
   const [userId, setUserId] = useState("");
   const [preset, setPreset] = useState<Preset>("all");
@@ -181,6 +194,8 @@ export function HistoryPanel({ projectId, fileId, fileName }: { projectId: strin
         </div>
       )}
 
+      <RestoreEvents fileId={fileId} role={role} onTreeChanged={onTreeChanged} />
+
       <div>
         <h3 className="mb-2 text-sm font-semibold">Timeline</h3>
         {events.length === 0 && !loading ? (
@@ -198,6 +213,21 @@ export function HistoryPanel({ projectId, fileId, fileName }: { projectId: strin
                   <span className="text-red-800 dark:text-red-400">−{e.removed.toLocaleString()}</span> characters
                   {(e.linesAdded > 0 || e.linesRemoved > 0) && ` · +${e.linesAdded}/−${e.linesRemoved} lines`}
                 </span>
+                {e.origin === "suggestion-accept" && (
+                  <span className="rounded border border-slate-400 px-1.5 text-xs" data-testid="event-origin">accepted suggestion</span>
+                )}
+                {e.origin === "restore" && (
+                  <span className="rounded border border-slate-400 px-1.5 text-xs" data-testid="event-origin">restore</span>
+                )}
+                {e.recovered && (
+                  <span
+                    className="rounded border border-amber-600 px-1.5 text-xs"
+                    title="Their own record was lost in a crash; this text was re-sent by someone else and credited to them"
+                    data-testid="event-recovered"
+                  >
+                    attributed after recovery
+                  </span>
+                )}
               </li>
             ))}
           </ol>
@@ -209,5 +239,72 @@ export function HistoryPanel({ projectId, fileId, fileName }: { projectId: strin
         )}
       </div>
     </section>
+  );
+}
+
+/** Restores of checkpoints (and undos of them) that touched this file, newest first, each undoable once. */
+function RestoreEvents({ fileId, role, onTreeChanged }: { fileId: string; role: Role; onTreeChanged(): void }) {
+  const restores = usePolled<RestoreEventDto[]>(`/files/${fileId}/restores`, 4000);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const rows = restores.data ?? [];
+  if (rows.length === 0 && !message) return null;
+
+  const undo = async (e: RestoreEventDto) => {
+    setBusy(e.id);
+    setMessage(null);
+    try {
+      const r = await api<RestoreResultDto>("POST", `/restores/${e.id}/undo`);
+      setMessage({ ok: true, text: r.status === "already" ? "Already at that content. Nothing was changed." : "Undone." });
+      onTreeChanged();
+      await restores.reload();
+    } catch (err) {
+      setMessage({ ok: false, text: errorText(err) });
+      await restores.reload();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div data-testid="restore-events-section">
+      <h3 className="mb-2 text-sm font-semibold">Restores</h3>
+      {message && (
+        <p role={message.ok ? "status" : "alert"} className="mb-2 text-sm" data-testid="restore-message">
+          {message.text}
+        </p>
+      )}
+      <ol className="flex flex-col divide-y divide-slate-200 dark:divide-slate-800" data-testid="restore-events">
+        {rows.map((e) => (
+          <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-sm" data-testid="restore-event">
+            <PersonChip person={e.user} />
+            <span data-testid="restore-event-text">
+              {e.kind === "undo" ? "undid the restore of checkpoint" : "restored checkpoint"} “{e.targetName}” ({e.scope === "project" ? "whole project" : (e.filePath ?? "one file")})
+            </span>
+            <span className="text-xs text-slate-600 dark:text-slate-400">
+              ·{" "}
+              <time dateTime={e.createdAt} title={formatAbs(e.createdAt)}>
+                {formatAgo(Date.parse(e.createdAt))}
+              </time>
+            </span>
+            {e.undone ? (
+              <span className="rounded border border-slate-400 px-1.5 text-xs" data-testid="restore-undone">undone</span>
+            ) : (
+              can(role, "checkpoint:restore") && (
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => undo(e)}
+                  className="rounded border border-slate-400 px-2 py-0.5 text-xs hover:bg-slate-100 disabled:opacity-50 dark:hover:bg-slate-800"
+                  data-testid="restore-undo"
+                >
+                  Undo this restore
+                </button>
+              )
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }

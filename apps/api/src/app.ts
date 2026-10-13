@@ -13,6 +13,9 @@ import { shareLinkRoutes } from "./routes/share-links";
 import { collabRoutes } from "./routes/collab";
 import { meRoutes } from "./routes/me";
 import { authorshipRoutes } from "./routes/authorship";
+import { reviewRoutes } from "./routes/review";
+import { checkpointRoutes } from "./routes/checkpoints";
+import { createCollabClient, noCollab, type CollabClient } from "./services/collab";
 
 export interface AppDeps {
   prisma: PrismaClient;
@@ -22,6 +25,11 @@ export interface AppDeps {
   collabSecret: string;
   /** WebSocket URL of the collab server as seen from the browser. */
   collabPublicUrl: string;
+  /**
+   * How the API reaches the collab server's signed /internal endpoints (accepting suggestions,
+   * restoring versions, checkpoints). Give a URL, or an object (tests use an in-memory one).
+   */
+  collab?: CollabClient | { url: string };
   /**
    * How many reverse proxies sit in front of the API (0 = none). The web app proxies browser
    * requests to the API, so with 1 the real client address is the one the proxy appended to
@@ -102,7 +110,17 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   const ctx: Ctx = {
     prisma: deps.prisma,
-    user: (req) => requireUser(deps.prisma, req),
+    user: async (req) => {
+      const user = await requireUser(deps.prisma, req);
+      // A page that knows who it is (see apps/web/lib/client-api.ts) says so on every call. If the
+      // session cookie now belongs to someone else (a second sign-in in the same browser replaced it),
+      // refuse instead of silently acting as the other person.
+      const expected = req.headers["x-expected-user"];
+      if (typeof expected === "string" && expected !== "" && expected !== user.id) {
+        throw new HttpError(409, `You are now signed in as ${user.name}. Reload this page to continue as ${user.name}.`, { signedInAs: { id: user.id, name: user.name } }, "IDENTITY_CHANGED");
+      }
+      return user;
+    },
     secureCookies: deps.webOrigin.startsWith("https://"),
     parse: (schema, data) => schema.parse(data),
   };
@@ -112,6 +130,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(fileRoutes(ctx));
   await app.register(meRoutes(ctx));
   await app.register(authorshipRoutes(ctx));
+  const collab = !deps.collab ? noCollab : "url" in deps.collab ? createCollabClient(deps.collab.url, deps.collabSecret) : deps.collab;
+  await app.register(reviewRoutes(ctx, collab));
+  await app.register(checkpointRoutes(ctx, collab));
   await app.register(shareLinkRoutes(ctx));
   await app.register(collabRoutes(ctx, { secret: deps.collabSecret, publicUrl: deps.collabPublicUrl }));
 

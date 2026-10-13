@@ -38,8 +38,8 @@ run("authorship (integration)", () => {
     return server.listen();
   };
 
-  async function connect(who: string, name = `file:${fileId}`) {
-    const doc = new Y.Doc();
+  async function connect(who: string, name = `file:${fileId}`, existing?: Y.Doc) {
+    const doc = existing ?? new Y.Doc();
     const websocketProvider = new HocuspocusProviderWebsocket({ url: `ws://127.0.0.1:${port}`, WebSocketPolyfill: WebSocket });
     const provider = new HocuspocusProvider({ websocketProvider, name, document: doc, token: await signCollabToken(users[who]!, SECRET) });
     provider.attach();
@@ -257,37 +257,75 @@ run("authorship (integration)", () => {
       warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     });
 
-    it("rejects Bob pre-sending text under Alice's clientID: connection closed, nothing applied or credited, Alice unaffected", async () => {
+    it("Bob re-sending text under Alice's clientID is NOT rejected: it is applied, credited to Alice and flagged, and Bob stays connected", async () => {
       const a = await connect("alice");
       await typeKeys(a.text, 0, "alice text");
       await settle();
       const aliceClient = a.doc.clientID;
       expect(await prisma.yClient.findUnique({ where: { fileId_clientId: { fileId, clientId: BigInt(aliceClient) } } })).toMatchObject({ userId: users.alice });
 
-      // Bob (a legitimate editor) hand-builds items under ALICE's clientID, at the clocks she uses next
+      // Bob (a legitimate editor) sends items under ALICE's clientID that the server has no record of
       const bob = new RawClient(port, `file:${fileId}`);
       raws.push(bob);
       await bob.open();
       await bob.authenticate(await signCollabToken(users.bob!, SECRET));
       expect(bob.scope).toBe("read-write");
-      const forged = new Y.Doc();
-      forged.clientID = aliceClient;
-      forged.getText("content").insert(0, "F".repeat(20)); // clocks 0..19: 10..19 are new to the server
-      const eventsBefore = await eventCount();
-      bob.send(bob.updateFrame(Y.encodeStateAsUpdate(forged)));
-      await until(() => bob.closeReason !== null);
-      expect(bob.closeReason).toBe("Forbidden");
-
+      const resent = new Y.Doc();
+      resent.clientID = aliceClient;
+      resent.getText("content").insert(0, "R".repeat(20)); // clocks 0..19: 10..19 are new to the server
+      bob.send(bob.updateFrame(Y.encodeStateAsUpdate(resent)));
+      await until(() => a.text.length === 20);
       await settle();
-      expect(a.text.toString()).toBe("alice text"); // never applied, never broadcast
-      expect(await eventCount()).toBe(eventsBefore); // nothing recorded for Bob
-      expect(warn.mock.calls.some((c: unknown[]) => String(c[0]).includes("rejected update"))).toBe(true); // logged
+      expect(bob.closeReason).toBeNull(); // nobody is disconnected
+      expect(bob.closed).toBe(false);
+      expect(bob.syncStatuses.at(-1)).toBe(true); // applied
 
-      // ...and Alice can keep typing under her own id
+      const row = await prisma.docEvent.findFirstOrThrow({ where: { fileId, recovered: true } });
+      expect(row).toMatchObject({ userId: users.alice, clientId: BigInt(aliceClient), clockStart: 10, clockEnd: 20 });
+      expect(await prisma.docEvent.count({ where: { fileId, userId: users.bob } })).toBe(0); // Bob is not credited
+      expect(warn.mock.calls.some((c: unknown[]) => String(c[0]).includes("after recovery"))).toBe(true); // logged
+
+      // ...and Alice's own later typing is unaffected (Yjs moves her to a fresh clientID if needed)
       await typeKeys(a.text, a.text.length, "!!");
       await settle();
-      expect(who((await blame(a.text))[0]!.main!.user)).toBe("Auth alice");
-      expect((await attributionIndex()).lookup(aliceClient, 11)!.user).toBe(users.alice);
+      expect(a.text.toString().endsWith("!!")).toBe(true);
+    });
+
+    it("crash recovery end to end: Alice's unflushed events are lost, Bob re-syncs her text, it is credited to Alice (persisted claim) and Bob is not disconnected", async () => {
+      const a = await connect("alice");
+      const b = await connect("bob");
+      await typeKeys(a.text, 0, "saved ");
+      await until(() => b.text.toString() === "saved ");
+      await settle();
+      await typeKeys(a.text, a.text.length, "lost");
+      await until(() => b.text.toString() === "saved lost");
+      await settle();
+      const aliceClient = a.doc.clientID;
+
+      // The crash: the server dies and, with it, the events and snapshot written after "saved ".
+      providers.forEach((p) => p.destroy());
+      sockets.forEach((s) => s.destroy());
+      await server.destroy();
+      await prisma.docEvent.deleteMany({ where: { fileId, clockStart: { gte: 6 } } });
+      const lastGood = new Y.Doc();
+      lastGood.clientID = aliceClient;
+      lastGood.getText("content").insert(0, "saved ");
+      await prisma.docSnapshot.update({ where: { fileId }, data: { state: Buffer.from(Y.encodeStateAsUpdate(lastGood)) } });
+      expect(await prisma.yClient.findUnique({ where: { fileId_clientId: { fileId, clientId: BigInt(aliceClient) } } })).toMatchObject({ userId: users.alice });
+      await start();
+
+      // Bob comes back with his live document, which still contains Alice's lost text.
+      const again = await connect("bob", `file:${fileId}`, b.doc);
+      await until(() => again.provider.isSynced);
+      await settle();
+
+      const row = await prisma.docEvent.findFirstOrThrow({ where: { fileId, recovered: true } });
+      expect(row).toMatchObject({ userId: users.alice, clientId: BigInt(aliceClient), clockStart: 6, clockEnd: 10, added: 4 });
+      expect(await prisma.docEvent.count({ where: { fileId, userId: users.bob, recovered: true } })).toBe(0);
+      const fresh = await connect("viewer");
+      await until(() => fresh.text.toString() === "saved lost");
+      expect(who((await blame(fresh.text))[0]!.main!.user)).toBe("Auth alice");
+      expect(again.websocketProvider.status).toBe("connected"); // still connected
     });
 
     it("rejects an awareness (cursor) update that claims another user's clientID", async () => {
@@ -303,7 +341,7 @@ run("authorship (integration)", () => {
       expect(bob.closeReason).toBe("Forbidden");
     });
 
-    it("the claim persists across a server restart", async () => {
+    it("the claim persists across a server restart: re-sent text is still credited to the same owner", async () => {
       const a = await connect("alice");
       await typeKeys(a.text, 0, "before restart");
       await settle();
@@ -317,12 +355,14 @@ run("authorship (integration)", () => {
       raws.push(bob);
       await bob.open();
       await bob.authenticate(await signCollabToken(users.bob!, SECRET));
-      const forged = new Y.Doc();
-      forged.clientID = aliceClient;
-      forged.getText("content").insert(0, "G".repeat(40));
-      bob.send(bob.updateFrame(Y.encodeStateAsUpdate(forged)));
-      await until(() => bob.closeReason !== null);
-      expect(bob.closeReason).toBe("Forbidden");
+      const resent = new Y.Doc();
+      resent.clientID = aliceClient;
+      resent.getText("content").insert(0, "G".repeat(40));
+      bob.send(bob.updateFrame(Y.encodeStateAsUpdate(resent)));
+      await until(() => bob.syncStatuses.length > 0);
+      await settle();
+      expect(bob.closeReason).toBeNull();
+      expect(await prisma.docEvent.findFirst({ where: { fileId, recovered: true } })).toMatchObject({ userId: users.alice });
     });
   });
 

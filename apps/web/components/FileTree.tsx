@@ -20,6 +20,7 @@ export function FileTree({
   activeFileId = null,
   onOpenFile,
   onNodesChange,
+  refreshKey = 0,
 }: {
   projectId: string;
   role: Role;
@@ -29,6 +30,8 @@ export function FileTree({
   onOpenFile?: (node: FileNodeDto) => void;
   /** Called whenever the tree changes, so the page can react (e.g. a deleted file closes). */
   onNodesChange?: (nodes: FileNodeDto[]) => void;
+  /** Change this number to reload the tree (e.g. after a checkpoint restore brought files back). */
+  refreshKey?: number;
 }) {
   const [nodes, setNodes] = useState(initialNodes);
   useEffect(() => onNodesChange?.(nodes), [nodes, onNodesChange]);
@@ -45,6 +48,9 @@ export function FileTree({
   async function refresh() {
     setNodes(await api<FileNodeDto[]>("GET", `/projects/${projectId}/files`));
   }
+  useEffect(() => {
+    if (refreshKey > 0) void refresh();
+  }, [refreshKey]);
 
   // New items go inside the selected folder, beside the selected file, or at the top level.
   function startCreate(type: "FILE" | "FOLDER") {

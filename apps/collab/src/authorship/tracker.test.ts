@@ -234,37 +234,83 @@ describe("clientID ownership (anti-forgery)", () => {
     return Y.encodeStateAsUpdate(forged);
   };
 
-  it("rejects an update with new items under another user's clientID, and logs it", async () => {
+  it("accepts an update with new items under another user's clientID: credited to the OWNER, flagged as recovered, logged, nobody rejected", async () => {
     const { tracker, store, server, text } = await aliceOwns();
-    const eventsBefore = store.events.length;
-    await expect(tracker.onDelivery(FILE, server, "bob", forgery())).rejects.toBeInstanceOf(OwnershipViolation);
+    const before = store.events.length;
+    await expect(tracker.onDelivery(FILE, server, "bob", forgery())).resolves.toBeUndefined();
+    Y.applyUpdate(server, forgery(), "remote"); // the caller applies an accepted update
     await tracker.flushDocument(FILE);
-    expect(store.events.length).toBe(eventsBefore); // nothing recorded for bob
-    expect(text()).toBe("alice text"); // and (since the caller never applies it) nothing changed
+    expect(text().length).toBe(15);
+    const added = store.events.slice(before);
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({ userId: "alice", clientId: 1001, clockStart: 10, clockEnd: 15, added: 5, recovered: true });
+    expect(store.events.filter((e) => e.userId === "bob")).toHaveLength(0); // Bob is not credited with Alice's id
     expect(silent.warn).toHaveBeenCalledTimes(1);
-    expect(silent.warn.mock.calls[0]![0]).toMatch(/rejected update/);
-    expect(silent.warn.mock.calls[0]![1]).toMatchObject({ fileId: FILE, clientId: 1001, owner: "alice", attemptedBy: "bob" });
+    expect(silent.warn.mock.calls[0]![0]).toMatch(/after recovery/);
+    expect(silent.warn.mock.calls[0]![1]).toMatchObject({ fileId: FILE, clientId: 1001, owner: "alice", deliveredBy: "bob" });
   });
 
-  it("the rejection carries the close code Hocuspocus uses to drop the connection", async () => {
-    const { tracker, server } = await aliceOwns();
-    const err = await tracker.onDelivery(FILE, server, "bob", forgery()).catch((e) => e);
-    expect(err).toMatchObject({ code: 4403, reason: "Forbidden", clientId: 1001, owner: "alice", attemptedBy: "bob" });
+  it("crash recovery: unflushed events are lost, Bob re-sends Alice's text, it is credited to Alice (from the persisted claim) and Bob stays connected", async () => {
+    const store = new FakeStore();
+    const first = setup(store);
+    await first.tracker.loadDocument(FILE);
+    const alice = first.connect("alice", 1001);
+    await alice.keys(0, "saved ");
+    await first.tracker.flushDocument(FILE); // "saved " is on record
+    const bob = first.connect("bob", 2002); // Bob has a live copy of everything
+    await alice.keys(alice.text.length, "lost in the crash"); // delivered, but the batch is still only in memory
+    await vi.advanceTimersByTimeAsync(10); // (bob's copy is updated below, as the real relay would)
+    Y.applyUpdate(bob.doc, Y.encodeStateAsUpdate(first.server), "remote");
+    // --- crash: the unflushed batch is gone; the clientID claim was already persisted ---
+    expect(store.events.every((e) => e.userId === "alice" && e.clockEnd <= 6)).toBe(true);
+
+    // The server restarts with its last snapshot (saved text only) and a fresh tracker.
+    const snapshot = new Y.Doc();
+    snapshot.clientID = 1001;
+    snapshot.getText("content").insert(0, "saved ");
+    const server2 = new Y.Doc();
+    Y.applyUpdate(server2, Y.encodeStateAsUpdate(snapshot));
+    const tracker2 = new AuthorshipTracker({ store, log: silent });
+    await tracker2.loadDocument(FILE);
+
+    // Bob's client reconnects and syncs its whole document: it contains Alice's lost text.
+    const resync = Y.encodeStateAsUpdate(bob.doc);
+    await expect(tracker2.onDelivery(FILE, server2, "bob", resync)).resolves.toBeUndefined(); // not rejected
+    Y.applyUpdate(server2, resync, "remote");
+    await tracker2.flushDocument(FILE);
+
+    expect(server2.getText("content").toString()).toBe("saved lost in the crash");
+    const recovered = store.events.filter((e) => e.recovered);
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({ userId: "alice", clientId: 1001, clockStart: 6, added: "lost in the crash".length });
+    expect(store.events.some((e) => e.userId === "bob" && e.recovered)).toBe(false);
   });
 
-  it("does not stop the real owner: alice keeps typing under her id", async () => {
-    const { tracker, store, server, alice } = await aliceOwns();
-    await tracker.onDelivery(FILE, server, "bob", forgery()).catch(() => undefined);
-    await alice.keys(alice.text.length, "!!");
-    await tracker.flushDocument(FILE);
-    expect(store.events.at(-1)).toMatchObject({ userId: "alice", clientId: 1001, added: 2 });
-  });
-
-  it("the binding is persisted: a restarted server still rejects", async () => {
+  it("the binding is persisted: a restarted server credits re-sent text to the same owner", async () => {
     const { store, server } = await aliceOwns();
     const restarted = new AuthorshipTracker({ store, log: silent });
     await restarted.loadDocument(FILE);
-    await expect(restarted.onDelivery(FILE, server, "bob", forgery())).rejects.toBeInstanceOf(OwnershipViolation);
+    await restarted.onDelivery(FILE, server, "bob", forgery());
+    await restarted.flushDocument(FILE);
+    expect(store.events.at(-1)).toMatchObject({ userId: "alice", recovered: true });
+  });
+
+  it("deletions in a recovered update are still the deliverer's work", async () => {
+    const { tracker, store, server } = await aliceOwns();
+    const bob = new Y.Doc();
+    bob.clientID = 2002;
+    Y.applyUpdate(bob, Y.encodeStateAsUpdate(server));
+    const lost = new Y.Doc();
+    Y.applyUpdate(lost, Y.encodeStateAsUpdate(server));
+    lost.clientID = 1001; // set after syncing: Yjs would otherwise swap the id on seeing its own items
+    lost.getText("content").insert(10, "++"); // alice's lost keystrokes: clocks 10..11
+    Y.applyUpdate(bob, Y.encodeStateAsUpdate(lost));
+    bob.getText("content").delete(0, 3); // and bob deletes three characters
+    await tracker.onDelivery(FILE, server, "bob", Y.encodeStateAsUpdate(bob));
+    await tracker.flushDocument(FILE);
+    const mine = store.events.filter((e) => e.userId === "bob");
+    expect(mine.reduce((n, e) => n + e.removed, 0)).toBe(3);
+    expect(store.events.find((e) => e.recovered)).toMatchObject({ userId: "alice", removed: 0, added: 2 });
   });
 
   it("the first user to use a clientID owns it, and the claim is written to the store", async () => {

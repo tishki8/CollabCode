@@ -4,11 +4,14 @@ import Editor, { loader, type OnMount } from "@monaco-editor/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import type { HocuspocusProvider } from "@hocuspocus/provider";
-import { can, cursorCss, readableTextColor, safeColor, type CollabTokenResponse, type PersonDto } from "@collabcode/shared";
+import { attribute, authorsOfRange, can, createAnchors, cursorCss, textRuns, readableTextColor, resolveAnchors, safeColor, type Anchors, type CollabTokenResponse, type PersonDto } from "@collabcode/shared";
 import { fetchCollabSessionWithRetry, fileRoom, openProvider } from "@/lib/collab-client";
 import { monacoLanguageFor } from "@/lib/monaco-language";
 import { useAttribution } from "@/lib/attribution";
 import { useBlameView } from "@/lib/blame-view";
+import { useReviewData } from "@/lib/review";
+import { useReviewDecorations } from "@/lib/review-view";
+import { ReviewSidebar, type EditorSelection } from "./ReviewSidebar";
 
 // Monaco is served from our own origin (see scripts/copy-monaco.mjs), not a CDN.
 loader.config({ paths: { vs: "/monaco/vs" } });
@@ -64,6 +67,8 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
   const [monacoApi, setMonacoApi] = useState<Parameters<OnMount>[1] | null>(null);
   const [blameOn, setBlameOn] = usePreference("cc.blame", true);
   const [coloursOn, setColoursOn] = usePreference("cc.colours", false);
+  const [reviewOn, setReviewOn] = usePreference("cc.review", true);
+  const [selection, setSelection] = useState<EditorSelection | null>(null);
   const [remoteCount, setRemoteCount] = useState(0);
   const styleRef = useRef<HTMLStyleElement | null>(null);
 
@@ -158,7 +163,7 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
     [canEdit, fileName],
   );
   const me: PersonDto | null = useMemo(() => (session ? { ...session.user } : null), [session]);
-  const { index, users, version } = useAttribution(fileId, blameOn || coloursOn);
+  const { index, users, version } = useAttribution(fileId, blameOn || coloursOn || reviewOn);
   const { legend, hasUnknown } = useBlameView({
     editor,
     monaco: monacoApi,
@@ -171,6 +176,55 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
     hover: blameOn,
     colours: coloursOn,
   });
+
+  // Suggestions and comments: fetched for this file, drawn over the text, listed in the sidebar.
+  const review = useReviewData(fileId);
+  const ydoc = provider?.document ?? null;
+  useReviewDecorations({ editor, monaco: monacoApi, ydoc, ytext, suggestions: review.suggestions, threads: review.threads, showResolved: false });
+
+  // What is selected in the editor (a collapsed selection is just the cursor).
+  useEffect(() => {
+    if (!editor) return;
+    const read = () => {
+      const model = editor.getModel();
+      const sel = editor.getSelection();
+      if (!model || !sel) return setSelection(null);
+      const from = model.getOffsetAt(sel.getStartPosition());
+      const to = model.getOffsetAt(sel.getEndPosition());
+      setSelection({ from, to, text: model.getValue().slice(from, to), line: sel.getStartPosition().lineNumber });
+    };
+    const d = editor.onDidChangeCursorSelection(read);
+    read();
+    return () => d.dispose();
+  }, [editor]);
+
+  const makeAnchors = (from: number, to: number): Anchors | null => (ytext ? createAnchors(Y, ytext, from, to) : null);
+  const rangeText = (anchors: Anchors): string | null => {
+    if (!ydoc || !ytext) return null;
+    const r = resolveAnchors(Y, ydoc, ytext, anchors);
+    return r ? ytext.toString().slice(r.from, r.to) : null;
+  };
+  // Whose code a suggestion would change: the authors of the characters in its range (same data as blame).
+  const authorsOf = (anchors: Anchors): { person: PersonDto | null; chars: number }[] | null => {
+    if (!ydoc || !ytext) return null;
+    const r = resolveAnchors(Y, ydoc, ytext, anchors);
+    if (!r) return null;
+    const ownClient = provider?.document.clientID;
+    const pieces = attribute(textRuns(ytext), index, (c) => (me && c === ownClient ? { user: me.id, at: Date.now() } : null));
+    const people = new Map(users);
+    if (me) people.set(me.id, me);
+    return authorsOfRange(pieces, r.from, r.to).map((a) => ({ person: a.user ? (people.get(a.user) ?? { id: a.user, name: "Unknown user", isGuest: false, color: "#666666", initials: "?" }) : null, chars: a.chars }));
+  };
+  const reveal = (anchors: Anchors) => {
+    if (!editor || !ydoc || !ytext) return;
+    const model = editor.getModel();
+    const r = resolveAnchors(Y, ydoc, ytext, anchors);
+    if (!model || !r) return;
+    const a = model.getPositionAt(r.from);
+    const b = model.getPositionAt(r.to);
+    editor.setSelection({ startLineNumber: a.lineNumber, startColumn: a.column, endLineNumber: b.lineNumber, endColumn: b.column });
+    editor.revealRangeInCenterIfOutsideViewport({ startLineNumber: a.lineNumber, startColumn: a.column, endLineNumber: b.lineNumber, endColumn: b.column });
+  };
 
   return (
     <div className="flex h-full flex-col" data-testid="editor-pane">
@@ -202,6 +256,16 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
             className={`rounded border px-2 py-0.5 text-xs ${coloursOn ? "border-blue-700 bg-blue-100 dark:bg-blue-950" : "border-slate-400"}`}
           >
             Contribution colours
+          </button>
+          <button
+            type="button"
+            aria-pressed={reviewOn}
+            onClick={() => setReviewOn(!reviewOn)}
+            title="Show suggestions and comments"
+            data-testid="toggle-review"
+            className={`rounded border px-2 py-0.5 text-xs ${reviewOn ? "border-blue-700 bg-blue-100 dark:bg-blue-950" : "border-slate-400"}`}
+          >
+            Review
           </button>
           <span className="text-xs text-slate-600 dark:text-slate-400" data-testid="remote-count">
             {remoteCount} other{remoteCount === 1 ? "" : "s"} here
@@ -244,7 +308,8 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
           )}
         </ul>
       )}
-      <div className="min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1">
+      <div className="min-h-0 min-w-0 flex-1">
         {status === "denied" ? (
           <p role="alert" className="p-6 text-sm">{STATUS_TEXT.denied}</p>
         ) : (
@@ -262,6 +327,20 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
             loading={<p className="p-6 text-sm">Loading editor…</p>}
           />
         )}
+      </div>
+      {reviewOn && me && session && (
+        <ReviewSidebar
+          fileId={fileId}
+          role={session.role}
+          me={me}
+          data={review}
+          selection={selection}
+          makeAnchors={makeAnchors}
+          rangeText={rangeText}
+          authorsOf={authorsOf}
+          onReveal={reveal}
+        />
+      )}
       </div>
     </div>
   );

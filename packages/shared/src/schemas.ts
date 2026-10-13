@@ -214,8 +214,8 @@ export interface MemberDto extends PersonDto {
  */
 export interface AttributionResponse {
   users: PersonDto[];
-  /** [clientId, clockStart, clockEnd, userIndex (into `users`), atMs, eventId] */
-  ranges: [number, number, number, number, number, string][];
+  /** [clientId, clockStart, clockEnd, userIndex (into `users`), atMs, eventId, recovered (1 = attributed after recovery)] */
+  ranges: [number, number, number, number, number, string, 0 | 1][];
   /** Pass as `after` next time. Null if there are no events yet. */
   lastEventId: string | null;
   hasMore: boolean;
@@ -230,6 +230,10 @@ export interface EventDto {
   removed: number;
   linesAdded: number;
   linesRemoved: number;
+  /** "edit" | "suggestion-accept" | "restore" */
+  origin: string;
+  /** Credited to this person after crash recovery, not delivered by them. */
+  recovered: boolean;
 }
 
 export interface EventsResponse {

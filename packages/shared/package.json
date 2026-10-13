@@ -20,6 +20,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./collab-token": "./src/collab-token.ts",
-    "./yjs": "./src/authorship/yjs.ts"
+    "./yjs": "./src/authorship/yjs.ts",
+    "./internal-auth": "./src/internal-auth.ts"
   }
 }
