@@ -74,8 +74,8 @@ run("review tools (integration)", () => {
     cookies[key] = `authjs.session-token=${token}`;
     ids[key] = u.id;
   }
-  const call = (who: string | null, method: "GET" | "POST", url: string, payload?: unknown) =>
-    app.inject({ method, url, payload: payload as object | undefined, headers: { ...(who ? { cookie: cookies[who]! } : {}), origin: WEB } });
+  const call = (who: string | null, method: "GET" | "POST", url: string, payload?: unknown, extra: Record<string, string> = {}) =>
+    app.inject({ method, url, payload: payload as object | undefined, headers: { ...(who ? { cookie: cookies[who]! } : {}), origin: WEB, ...extra } });
 
   const anchorsFor = (id: string, needle: string): Anchors => {
     const at = text(id).toString().indexOf(needle);
@@ -152,6 +152,36 @@ run("review tools (integration)", () => {
       expect(edits).toHaveLength(1);
     });
 
+    it("nobody can accept their own suggestion, not even the owner: the server says 403 SELF_ACCEPT and the text is untouched", async () => {
+      for (const who of ["owner", "editor"]) {
+        const s = (await suggest(who, "main", "start")).json();
+        edits.length = 0;
+        const res = await call(who, "POST", `/suggestions/${s.id}/accept`);
+        expect(res.statusCode).toBe(403);
+        expect(res.json().code).toBe("SELF_ACCEPT");
+        expect(edits).toHaveLength(0);
+        expect(text(fileId).toString()).toContain("def main");
+        expect((await prisma.suggestion.findUniqueOrThrow({ where: { id: s.id } })).status).toBe("OPEN");
+
+        // they can withdraw it
+        expect((await call(who, "POST", `/suggestions/${s.id}/reject`)).json()).toMatchObject({ status: "REJECTED", resolvedBy: { id: ids[who] } });
+      }
+    });
+
+    it("another editor (or the owner) CAN accept an editor's or owner's suggestion, credited to its author", async () => {
+      text(fileId).insert(text(fileId).length, "zz_alpha = 1\n");
+      const fromOwner = (await suggest("owner", "zz_alpha", "zz_beta")).json();
+      edits.length = 0;
+      expect((await call("editor", "POST", `/suggestions/${fromOwner.id}/accept`)).statusCode).toBe(200);
+      expect(edits[0]).toMatchObject({ userId: ids.owner, origin: "suggestion-accept" });
+      expect(text(fileId).toString()).toContain("zz_beta = 1");
+
+      const fromEditor = (await suggest("editor", "zz_beta", "zz_gamma")).json();
+      expect((await call("owner", "POST", `/suggestions/${fromEditor.id}/accept`)).statusCode).toBe(200);
+      expect(edits.at(-1)).toMatchObject({ userId: ids.editor });
+      expect(text(fileId).toString()).toContain("zz_gamma = 1");
+    });
+
     it("rejecting: the owner and editors can; the author can withdraw their own; other commenters cannot", async () => {
       const s1 = (await suggest("commenter", "main", "begin")).json();
       expect((await call("commenter2", "POST", `/suggestions/${s1.id}/reject`)).statusCode).toBe(403);
@@ -202,6 +232,39 @@ run("review tools (integration)", () => {
       expect(s).toMatchObject({ originalText: "", anchors: { collapsed: true } });
       expect((await call("editor", "POST", `/suggestions/${s.id}/accept`)).statusCode).toBe(200);
       expect(text(fileId).toString()).toContain("  # inserted\n");
+    });
+  });
+
+  describe("who is acting (identity)", () => {
+    it("the author always comes from the session cookie, never from the request body or the project owner", async () => {
+      const t = await call("commenter", "POST", `/files/${fileId}/threads`, { anchors: anchorsFor(fileId, "main"), body: "hi", authorId: ids.owner, createdById: ids.owner });
+      expect(t.statusCode).toBe(201);
+      expect(t.json().createdBy.id).toBe(ids.commenter);
+      expect(t.json().comments[0].author.id).toBe(ids.commenter);
+      const reply = await call("commenter2", "POST", `/threads/${t.json().id}/comments`, { body: "yo", authorId: ids.owner });
+      expect(reply.json().comments.at(-1).author.id).toBe(ids.commenter2);
+      const sg = await call("commenter2", "POST", `/files/${fileId}/suggestions`, { anchors: anchorsFor(fileId, "main"), newText: "primary", authorId: ids.owner });
+      expect(sg.json().author.id).toBe(ids.commenter2);
+      const done = await call("editor", "POST", `/threads/${t.json().id}/resolve`);
+      expect(done.json().resolvedBy.id).toBe(ids.editor);
+      expect((await call("editor", "POST", `/suggestions/${sg.json().id}/reject`)).json().resolvedBy.id).toBe(ids.editor);
+      // and the rows in the database agree
+      const rows = await prisma.comment.findMany({ where: { threadId: t.json().id } });
+      expect(rows.map((r) => r.authorId).sort()).toEqual([ids.commenter, ids.commenter2].sort());
+    });
+
+    it("a page that thinks it is Bob but whose cookie is now Alice's is refused (409 IDENTITY_CHANGED), and nothing is written", async () => {
+      const before = await prisma.commentThread.count({ where: { fileId } });
+      // the cookie is the owner's; the page was opened as the commenter
+      const res = await call("owner", "POST", `/files/${fileId}/threads`, { anchors: anchorsFor(fileId, "main"), body: "I am bob" }, { "x-expected-user": ids.commenter! });
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toMatchObject({ code: "IDENTITY_CHANGED", details: { signedInAs: { id: ids.owner } } });
+      expect(await prisma.commentThread.count({ where: { fileId } })).toBe(before);
+      // reads are refused too, so the page cannot show the other person's view as if it were Bob's
+      expect((await call("owner", "GET", `/files/${fileId}/threads`, undefined, { "x-expected-user": ids.commenter! })).statusCode).toBe(409);
+      // a matching header (or none) works
+      expect((await call("owner", "GET", `/files/${fileId}/threads`, undefined, { "x-expected-user": ids.owner! })).statusCode).toBe(200);
+      expect((await call("owner", "GET", `/files/${fileId}/threads`)).statusCode).toBe(200);
     });
   });
 

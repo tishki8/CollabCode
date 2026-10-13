@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
-import { createAnchors, isGone, minimalReplacement, resolveAnchors, base64ToBytes, bytesToBase64, ReplayEngine, visibleSteps, playbackDelay, type Anchors, type ReplayStep } from "../index";
+import { createAnchors, isGone, minimalReplacement, resolveAnchors, base64ToBytes, bytesToBase64, ReplayEngine, visibleSteps, playbackDelay, authorsOfRange, type Anchors, type ReplayStep } from "../index";
 
 /** Two peers editing the same text that sync on demand. */
 function peers(initial: string) {
@@ -247,5 +247,30 @@ describe("ReplayEngine", () => {
     expect(playbackDelay(0, 1)).toBe(150);
     expect(playbackDelay(1000, 4)).toBe(250);
     expect(playbackDelay(0, 1000)).toBe(30); // never a busy loop
+  });
+});
+
+describe("authorsOfRange", () => {
+  const pieces = [
+    { offset: 0, length: 5, user: "alice", at: 1 }, // "hello"
+    { offset: 5, length: 6, user: "bob", at: 2 }, // " world"
+    { offset: 11, length: 3, user: null, at: null }, // unknown
+  ];
+  it("lists the authors of the characters in the range, biggest share first", () => {
+    expect(authorsOfRange(pieces, 3, 9)).toEqual([
+      { user: "bob", chars: 4 },
+      { user: "alice", chars: 2 },
+    ]);
+    expect(authorsOfRange(pieces, 6, 10)).toEqual([{ user: "bob", chars: 4 }]);
+  });
+  it("includes unrecorded text as unknown", () => {
+    expect(authorsOfRange(pieces, 10, 14)).toEqual([{ user: null, chars: 3 }, { user: "bob", chars: 1 }].sort((x, y) => y.chars - x.chars));
+  });
+  it("an insertion point looks at the characters either side", () => {
+    expect(authorsOfRange(pieces, 5, 5).map((a) => a.user).sort()).toEqual(["alice", "bob"]);
+    expect(authorsOfRange(pieces, 0, 0)).toEqual([{ user: "alice", chars: 1 }]);
+  });
+  it("nothing at all gives no authors", () => {
+    expect(authorsOfRange([], 0, 5)).toEqual([]);
   });
 });

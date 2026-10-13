@@ -10,6 +10,7 @@ import { HistoryPanel } from "./HistoryPanel";
 import { ContributionsPanel } from "./ContributionsPanel";
 import { CheckpointsPanel } from "./CheckpointsPanel";
 import { ReplayPanel } from "./ReplayPanel";
+import { IdentityGuard } from "./IdentityGuard";
 import { pathOfNode } from "@/lib/tree-path";
 
 // Monaco only works in the browser.
@@ -76,6 +77,8 @@ export function ProjectWorkspace({
   }, [nodes, activeFileId]);
 
   return (
+    <>
+    <IdentityGuard userId={currentUserId} />
     <main id="main" className="grid h-[calc(100vh-3.5rem)] grid-cols-[19rem_1fr]">
       <aside aria-label="Project sidebar" className="flex flex-col gap-6 overflow-y-auto border-r border-slate-200 p-4 dark:border-slate-800">
         <div className="flex flex-col gap-3">
@@ -169,5 +172,6 @@ export function ProjectWorkspace({
         )}
       </section>
     </main>
+    </>
   );
 }

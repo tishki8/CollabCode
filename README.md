@@ -345,7 +345,11 @@ Selecting nothing and suggesting inserts at the cursor. Editors can also suggest
 scratch copy under a fresh clientID, runs it through the same authorship path as a typed edit
 (`tracker.onDelivery`, before applying), and broadcasts it. So the history shows it as the
 **suggester's** change (event origin `suggestion-accept`, badge "accepted suggestion"), not the
-accepter's. It appears live for everyone connected. Rejecting changes nothing; the author can
+accepter's. It appears live for everyone connected. **Nobody approves their own suggestion**
+(enforced on the server: 403 `SELF_ACCEPT`, even for the owner); the author can only withdraw it, and
+any *other* editor or the owner can accept or reject. The sidebar says whose code a suggestion changes
+("Alice suggested a change to Bob's code", from the same attribution data as blame) and highlights
+suggestions on **your** code with an "On your code" badge. Rejecting changes nothing; the author can
 withdraw their own. Claiming is atomic (`UPDATE ... WHERE status = 'OPEN'`), so two editors clicking
 Accept cannot apply it twice; if the call to the collab server fails, the suggestion goes back to open.
 
@@ -398,6 +402,16 @@ checkpoint when the file has more than 2,000 changes, and a request over 20,000 
 with a hint to pick a later checkpoint). The player keeps a keyframe every 100 events so scrubbing
 backwards does not start over. The delay between two changes is their real gap squeezed into
 0.15-1.5 s, divided by the speed.
+
+**Who is acting (identity).** The author of every comment, reply, suggestion, resolve and accept comes
+only from the session cookie on the server (`ctx.user`), never from the request body or the project
+owner. One pitfall is the browser, not the server: the session is a single cookie per browser, so
+signing in as Alice in a second tab of the same browser replaces Bob's cookie, and Bob's already-open
+tab (its WebSocket was authenticated earlier) keeps showing Bob while its REST calls go out as Alice.
+To prevent that silently happening, every call from a project page carries `X-Expected-User`; the
+server answers **409 `IDENTITY_CHANGED`** when the cookie belongs to someone else, and the page also
+re-checks `/me` on focus, visibility change and every 30 s and shows a "You are now signed in as X"
+banner with a Reload button. Use separate browser profiles or private windows for two people.
 
 **Security notes.** `suggestion:create` / `comment:create` come from the role in the database for
 every request (never the client); non-members get 404 and viewers 403. The collab server's

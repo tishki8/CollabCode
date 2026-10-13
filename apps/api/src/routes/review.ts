@@ -108,6 +108,10 @@ export const reviewRoutes =
       const { id: suggestionId } = ctx.parse(idParams, req.params);
       const { s, node } = await loadSuggestion(suggestionId);
       await requireAction(prisma, node.projectId, user.id, "suggestion:resolve");
+      // Four eyes: nobody approves their own suggestion (not even the owner). They can withdraw it.
+      if (s.authorId === user.id) {
+        throw new HttpError(403, "You can't accept your own suggestion. Another editor or the owner has to accept it; you can withdraw it.", undefined, "SELF_ACCEPT");
+      }
 
       // Claim it first so two editors clicking Accept at once cannot apply it twice.
       const claimed = await prisma.suggestion.updateMany({

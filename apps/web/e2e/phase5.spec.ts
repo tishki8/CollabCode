@@ -355,3 +355,156 @@ test.describe("Phase 5: replay", () => {
     await bob.context.close();
   });
 });
+
+test.describe("Phase 5: who is acting", () => {
+  test("Bob comments, replies and suggests from his own browser: every item names Bob, on both screens", async ({ browser }) => {
+    const { alice, bob } = await aliceAndBob(browser, `Authors ${Date.now()}`, "comment");
+    await typeInEditor(alice.page, "rate = 0.2");
+    await expect.poll(() => editorText(bob.page), SLOW).toContain("rate");
+
+    await selectText(bob.page, "rate");
+    await sidebar(bob.page).getByTestId("btn-comment").click();
+    await sidebar(bob.page).getByTestId("draft-text").fill("Bob's first comment");
+    await sidebar(bob.page).getByTestId("draft-submit").click();
+    const bobThread = sidebar(bob.page).getByTestId("thread-item");
+    await bobThread.getByTestId("thread-reply-input").fill("Bob's reply");
+    await bobThread.getByTestId("thread-reply-send").click();
+    await expect(bobThread.getByTestId("comment")).toHaveCount(2);
+
+    await selectText(bob.page, "0.2");
+    await sidebar(bob.page).getByTestId("btn-suggest").click();
+    await sidebar(bob.page).getByTestId("draft-text").fill("0.25");
+    await sidebar(bob.page).getByTestId("draft-submit").click();
+    await expect(sidebar(bob.page).getByTestId("suggestion-item")).toHaveCount(1);
+
+    for (const page of [bob.page, alice.page]) {
+      const side = sidebar(page);
+      await side.getByTestId("review-tab-comments").click();
+      const comments = side.getByTestId("thread-item").getByTestId("comment");
+      await expect(comments).toHaveCount(2, SLOW);
+      for (const c of await comments.all()) {
+        await expect(c.getByTestId("person-chip")).toContainText("Bob Demo");
+        await expect(c.getByTestId("person-chip")).not.toContainText("Alice");
+      }
+      await side.getByTestId("review-tab-suggestions").click();
+      const item = side.getByTestId("suggestion-item");
+      await expect(item).toBeVisible(SLOW);
+      await expect(item.getByTestId("person-chip").first()).toContainText("Bob Demo");
+    }
+
+    // The data itself agrees, as seen through Alice's own session.
+    const projectId = new URL(alice.page.url()).pathname.split("/")[2];
+    const files = await (await alice.page.request.get(`/api/v1/projects/${projectId}/files`)).json();
+    const threads = await (await alice.page.request.get(`/api/v1/files/${files[0].id}/threads`)).json();
+    expect(threads[0].createdBy.name).toBe("Bob Demo");
+    expect(threads[0].comments.map((c: { author: { name: string } }) => c.author.name)).toEqual(["Bob Demo", "Bob Demo"]);
+    const suggestions = await (await alice.page.request.get(`/api/v1/files/${files[0].id}/suggestions`)).json();
+    expect(suggestions[0].author.name).toBe("Bob Demo");
+
+    // Alice resolves it: that is shown as HER action, not Bob's
+    await alice.page.getByTestId("review-tab-comments").click();
+    await alice.page.getByTestId("thread-resolve").click();
+    await alice.page.getByTestId("show-resolved").check();
+    await expect(alice.page.getByTestId("resolved-threads")).toContainText("Resolved by Alice Demo");
+
+    await alice.context.close();
+    await bob.context.close();
+  });
+
+  test("signing in as someone else in another tab of the same browser shows a banner, and the stale tab cannot act as the new person", async ({ browser }) => {
+    const { alice, bob } = await aliceAndBob(browser, `SameBrowser ${Date.now()}`, "comment");
+    await typeInEditor(alice.page, "limit = 10");
+    await expect.poll(() => editorText(bob.page), SLOW).toContain("limit");
+    await expect(bob.page.getByTestId("identity-banner")).toHaveCount(0);
+
+    // Alice signs in in a second tab of BOB's browser: the one session cookie is replaced.
+    const second = await bob.context.newPage();
+    await second.goto("/api/dev-login?user=alice&next=/dashboard");
+
+    // Bob's tab notices when it regains focus
+    await bob.page.bringToFront();
+    await bob.page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    const banner = bob.page.getByTestId("identity-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("You are now signed in as Alice Demo");
+
+    // Even before the banner, acting from that tab is refused rather than done as Alice
+    await selectText(bob.page, "limit");
+    await sidebar(bob.page).getByTestId("btn-comment").click();
+    await sidebar(bob.page).getByTestId("draft-text").fill("this must not become Alice's comment");
+    await sidebar(bob.page).getByTestId("draft-submit").click();
+    await expect(bob.page.getByTestId("review-error")).toContainText("signed in as Alice Demo");
+    const projectId = new URL(bob.page.url()).pathname.split("/")[2];
+    const files = await (await second.request.get(`/api/v1/projects/${projectId}/files`)).json();
+    const threads = await (await second.request.get(`/api/v1/files/${files[0].id}/threads`)).json();
+    expect(threads).toHaveLength(0);
+
+    // Reload continues as the person who is really signed in
+    await banner.getByTestId("identity-reload").click();
+    await expect(bob.page.getByText("you are owner")).toBeVisible({ timeout: 15_000 });
+    await expect(bob.page.getByTestId("identity-banner")).toHaveCount(0);
+
+    await alice.context.close();
+    await bob.context.close();
+  });
+});
+
+test.describe("Phase 5: approving suggestions", () => {
+  test("you cannot accept your own suggestion; another editor can; the sidebar names whose code it changes and highlights yours", async ({ browser }) => {
+    const { alice, bob } = await aliceAndBob(browser, `FourEyes ${Date.now()}`, "edit");
+    await typeInEditor(bob.page, "bob_value = 1");
+    await expect.poll(() => editorText(alice.page), SLOW).toContain("bob_value");
+
+    // Alice (the owner) suggests a change to Bob's line
+    await selectText(alice.page, "bob_value");
+    await sidebar(alice.page).getByTestId("btn-suggest").click();
+    await sidebar(alice.page).getByTestId("draft-text").fill("renamed_value");
+    await sidebar(alice.page).getByTestId("draft-submit").click();
+    const mine = sidebar(alice.page).getByTestId("suggestion-item");
+    await expect(mine).toBeVisible();
+
+    // She cannot accept it, only withdraw it
+    await expect(mine.getByTestId("suggestion-accept")).toHaveCount(0);
+    await expect(mine.getByTestId("suggestion-reject")).toHaveText("Withdraw");
+    await expect(mine.getByTestId("self-accept-note")).toContainText("Someone else has to accept");
+
+    // Whose code is it? Bob's text is recorded once his typing batch is saved (a few seconds)
+    await expect(mine.getByTestId("suggestion-target")).toContainText("Alice Demo suggested a change to Bob Demo's code", SLOW);
+    await expect(mine).toHaveAttribute("data-on-my-code", "false");
+
+    // Bob sees it highlighted as being on HIS code, and may accept it (he is an editor and not the author)
+    const theirs = sidebar(bob.page).getByTestId("suggestion-item");
+    await expect(theirs).toBeVisible(SLOW);
+    await expect(theirs).toHaveAttribute("data-on-my-code", "true", SLOW);
+    await expect(theirs.getByTestId("suggestion-on-mine")).toHaveText("On your code");
+    await expect(theirs.getByTestId("suggestion-target")).toContainText("Alice Demo suggested a change to your code");
+    await theirs.getByTestId("suggestion-accept").click();
+    await expect.poll(() => editorText(bob.page)).toBe("renamed_value = 1");
+    await expect.poll(() => editorText(alice.page), SLOW).toBe("renamed_value = 1");
+
+    await alice.context.close();
+    await bob.context.close();
+  });
+
+  test("the server refuses a self-accept even if the page is tampered with to show the button", async ({ browser }) => {
+    const { alice, bob } = await aliceAndBob(browser, `SelfAccept ${Date.now()}`, "edit");
+    await typeInEditor(bob.page, "x = 1");
+    await expect.poll(() => editorText(alice.page), SLOW).toContain("x = 1");
+    await selectText(alice.page, "x");
+    await sidebar(alice.page).getByTestId("btn-suggest").click();
+    await sidebar(alice.page).getByTestId("draft-text").fill("y");
+    await sidebar(alice.page).getByTestId("draft-submit").click();
+    await expect(sidebar(alice.page).getByTestId("suggestion-item")).toBeVisible();
+
+    const projectId = new URL(alice.page.url()).pathname.split("/")[2];
+    const files = await (await alice.page.request.get(`/api/v1/projects/${projectId}/files`)).json();
+    const [s] = await (await alice.page.request.get(`/api/v1/files/${files[0].id}/suggestions`)).json();
+    const res = await alice.page.request.post(`/api/v1/suggestions/${s.id}/accept`, { headers: { origin: "http://localhost:3000" } });
+    expect(res.status()).toBe(403);
+    expect((await res.json()).code).toBe("SELF_ACCEPT");
+    expect(await editorText(alice.page)).toBe("x = 1");
+
+    await alice.context.close();
+    await bob.context.close();
+  });
+});

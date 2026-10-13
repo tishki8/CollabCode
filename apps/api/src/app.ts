@@ -110,7 +110,17 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   const ctx: Ctx = {
     prisma: deps.prisma,
-    user: (req) => requireUser(deps.prisma, req),
+    user: async (req) => {
+      const user = await requireUser(deps.prisma, req);
+      // A page that knows who it is (see apps/web/lib/client-api.ts) says so on every call. If the
+      // session cookie now belongs to someone else (a second sign-in in the same browser replaced it),
+      // refuse instead of silently acting as the other person.
+      const expected = req.headers["x-expected-user"];
+      if (typeof expected === "string" && expected !== "" && expected !== user.id) {
+        throw new HttpError(409, `You are now signed in as ${user.name}. Reload this page to continue as ${user.name}.`, { signedInAs: { id: user.id, name: user.name } }, "IDENTITY_CHANGED");
+      }
+      return user;
+    },
     secureCookies: deps.webOrigin.startsWith("https://"),
     parse: (schema, data) => schema.parse(data),
   };

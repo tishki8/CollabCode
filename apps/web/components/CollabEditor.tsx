@@ -4,7 +4,7 @@ import Editor, { loader, type OnMount } from "@monaco-editor/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import type { HocuspocusProvider } from "@hocuspocus/provider";
-import { can, createAnchors, cursorCss, readableTextColor, resolveAnchors, safeColor, type Anchors, type CollabTokenResponse, type PersonDto } from "@collabcode/shared";
+import { attribute, authorsOfRange, can, createAnchors, cursorCss, textRuns, readableTextColor, resolveAnchors, safeColor, type Anchors, type CollabTokenResponse, type PersonDto } from "@collabcode/shared";
 import { fetchCollabSessionWithRetry, fileRoom, openProvider } from "@/lib/collab-client";
 import { monacoLanguageFor } from "@/lib/monaco-language";
 import { useAttribution } from "@/lib/attribution";
@@ -163,7 +163,7 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
     [canEdit, fileName],
   );
   const me: PersonDto | null = useMemo(() => (session ? { ...session.user } : null), [session]);
-  const { index, users, version } = useAttribution(fileId, blameOn || coloursOn);
+  const { index, users, version } = useAttribution(fileId, blameOn || coloursOn || reviewOn);
   const { legend, hasUnknown } = useBlameView({
     editor,
     monaco: monacoApi,
@@ -203,6 +203,17 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
     if (!ydoc || !ytext) return null;
     const r = resolveAnchors(Y, ydoc, ytext, anchors);
     return r ? ytext.toString().slice(r.from, r.to) : null;
+  };
+  // Whose code a suggestion would change: the authors of the characters in its range (same data as blame).
+  const authorsOf = (anchors: Anchors): { person: PersonDto | null; chars: number }[] | null => {
+    if (!ydoc || !ytext) return null;
+    const r = resolveAnchors(Y, ydoc, ytext, anchors);
+    if (!r) return null;
+    const ownClient = provider?.document.clientID;
+    const pieces = attribute(textRuns(ytext), index, (c) => (me && c === ownClient ? { user: me.id, at: Date.now() } : null));
+    const people = new Map(users);
+    if (me) people.set(me.id, me);
+    return authorsOfRange(pieces, r.from, r.to).map((a) => ({ person: a.user ? (people.get(a.user) ?? { id: a.user, name: "Unknown user", isGuest: false, color: "#666666", initials: "?" }) : null, chars: a.chars }));
   };
   const reveal = (anchors: Anchors) => {
     if (!editor || !ydoc || !ytext) return;
@@ -326,6 +337,7 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
           selection={selection}
           makeAnchors={makeAnchors}
           rangeText={rangeText}
+          authorsOf={authorsOf}
           onReveal={reveal}
         />
       )}

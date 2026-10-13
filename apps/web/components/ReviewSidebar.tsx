@@ -24,6 +24,8 @@ interface Props {
   makeAnchors(from: number, to: number): Anchors | null;
   /** The text an anchor points at right now (null if it cannot be found). */
   rangeText(anchors: Anchors): string | null;
+  /** Whose code the anchored range holds (from the blame data), biggest share first. */
+  authorsOf(anchors: Anchors): { person: PersonDto | null; chars: number }[] | null;
   onReveal(anchors: Anchors): void;
 }
 
@@ -38,7 +40,7 @@ const textarea = "w-full rounded border border-slate-400 bg-transparent p-1.5 te
  * Suggestions and inline comments of the open file. Everyone who can see the file can read them;
  * what you can DO comes from your role (the server enforces the same rules).
  */
-export function ReviewSidebar({ fileId, role, me, data, selection, makeAnchors, rangeText, onReveal }: Props) {
+export function ReviewSidebar({ fileId, role, me, data, selection, makeAnchors, rangeText, authorsOf, onReveal }: Props) {
   const [tab, setTab] = useState<Tab>("suggestions");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [text, setText] = useState("");
@@ -183,14 +185,25 @@ export function ReviewSidebar({ fileId, role, me, data, selection, makeAnchors, 
               const current = rangeText(s.anchors);
               const drifted = current !== null && current !== s.originalText;
               const isMine = s.author.id === me.id;
+              const authors = authorsOf(s.anchors);
+              const onMyCode = !isMine && !!authors?.some((a) => a.person?.id === me.id);
               return (
-                <article key={s.id} className="flex flex-col gap-1 rounded border border-slate-300 p-2 dark:border-slate-700" data-testid="suggestion-item">
+                <article
+                  key={s.id}
+                  className={`flex flex-col gap-1 rounded border p-2 ${onMyCode ? "border-blue-600 bg-blue-50 dark:bg-blue-950" : "border-slate-300 dark:border-slate-700"}`}
+                  data-testid="suggestion-item"
+                  data-on-my-code={onMyCode ? "true" : "false"}
+                >
                   <header className="flex items-center justify-between gap-2">
                     <PersonChip person={s.author} />
                     <time dateTime={s.createdAt} title={formatAbs(s.createdAt)} className="text-xs text-slate-600 dark:text-slate-400">
                       {formatAgo(Date.parse(s.createdAt))}
                     </time>
                   </header>
+                  <p className="text-xs" data-testid="suggestion-target">
+                    {onMyCode && <span className="mr-1.5 rounded bg-blue-700 px-1.5 py-0.5 font-semibold text-white" data-testid="suggestion-on-mine">On your code</span>}
+                    {targetSentence(s.author, authors, me)}
+                  </p>
                   <button type="button" className="text-left" onClick={() => onReveal(s.anchors)} title="Show in the editor" data-testid="suggestion-reveal">
                     {s.originalText ? (
                       <del className="block whitespace-pre-wrap break-words font-mono text-xs text-red-800 dark:text-red-300" data-testid="suggestion-old">
@@ -205,17 +218,22 @@ export function ReviewSidebar({ fileId, role, me, data, selection, makeAnchors, 
                   </button>
                   {drifted && <p className="text-xs text-amber-800 dark:text-amber-400">The text has changed since this was suggested.</p>}
                   <div className="flex gap-2">
-                    {can(role, "suggestion:resolve") && (
+                    {can(role, "suggestion:resolve") && !isMine && (
                       <button type="button" className={`${btn} border-green-700`} disabled={busy} onClick={() => decide(s, "accept")} data-testid="suggestion-accept">
                         Accept
                       </button>
                     )}
                     {(can(role, "suggestion:resolve") || isMine) && (
                       <button type="button" className={btn} disabled={busy} onClick={() => decide(s, "reject")} data-testid="suggestion-reject">
-                        {isMine && !can(role, "suggestion:resolve") ? "Withdraw" : "Reject"}
+                        {isMine ? "Withdraw" : "Reject"}
                       </button>
                     )}
                   </div>
+                  {isMine && can(role, "suggestion:resolve") && (
+                    <p className="text-xs text-slate-600 dark:text-slate-400" data-testid="self-accept-note">
+                      Someone else has to accept your suggestion. You can withdraw it.
+                    </p>
+                  )}
                 </article>
               );
             })}
@@ -259,6 +277,25 @@ export function ReviewSidebar({ fileId, role, me, data, selection, makeAnchors, 
       </div>
     </aside>
   );
+}
+
+/** "Alice suggested a change to Bob's code" / "...to their own code" / "...to your code". */
+function targetSentence(suggester: PersonDto, authors: { person: PersonDto | null; chars: number }[] | null, me: PersonDto): string {
+  const first = suggester.name;
+  if (!authors || authors.length === 0) return `${first} suggested a change`;
+  const names = authors.map((a) => {
+    if (a.person === null) return "code with no recorded author";
+    if (a.person.id === me.id) return "you";
+    if (a.person.id === suggester.id) return "themselves";
+    return a.person.name;
+  });
+  const only = authors.length === 1 ? authors[0]!.person : undefined;
+  if (only && only.id === suggester.id) return `${first} suggested a change to their own code`;
+  if (only === null) return `${first} suggested a change to code with no recorded author`;
+  const shown = names.filter((n) => n !== "code with no recorded author");
+  const list = shown.length <= 1 ? shown.join("") : `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}`;
+  const possessive = list === "you" ? "your" : list.endsWith("s") ? `${list}'` : `${list}'s`;
+  return `${first} suggested a change to ${possessive} code`;
 }
 
 function Thread({
