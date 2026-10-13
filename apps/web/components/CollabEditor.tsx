@@ -143,6 +143,20 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
 
   // Blame: who wrote each line, from the live text plus the server's attribution ranges.
   const ytext = useMemo(() => provider?.document.getText("content") ?? null, [provider]);
+  // @monaco-editor/react re-applies `options` whenever its identity changes, so a fresh object on
+  // every render would re-assert readOnly on each re-render (blame, presence, polling...).
+  const editorOptions = useMemo(
+    () => ({
+      readOnly: !canEdit,
+      domReadOnly: !canEdit,
+      minimap: { enabled: false },
+      fontSize: 14,
+      scrollBeyondLastLine: false,
+      automaticLayout: true,
+      ariaLabel: `Editor for ${fileName}`,
+    }),
+    [canEdit, fileName],
+  );
   const me: PersonDto | null = useMemo(() => (session ? { ...session.user } : null), [session]);
   const { index, users, version } = useAttribution(fileId, blameOn || coloursOn);
   const { legend, hasUnknown } = useBlameView({
@@ -244,15 +258,7 @@ export function CollabEditor({ projectId, fileId, fileName }: Props) {
               setEditor(ed);
               setMonacoApi(m);
             }}
-            options={{
-              readOnly: !canEdit,
-              domReadOnly: !canEdit,
-              minimap: { enabled: false },
-              fontSize: 14,
-              scrollBeyondLastLine: false,
-              automaticLayout: true,
-              ariaLabel: `Editor for ${fileName}`,
-            }}
+            options={editorOptions}
             loading={<p className="p-6 text-sm">Loading editor…</p>}
           />
         )}

@@ -145,6 +145,43 @@ test.describe("Phase 3: guests", () => {
   }
 });
 
+test.describe("Phase 3: editor options", () => {
+  test("re-rendering the editor does not re-apply options over a runtime change", async ({ browser }) => {
+    // Regression for a CI flake: the options object used to be rebuilt on every render, and
+    // @monaco-editor/react re-applies it whenever its identity changes, silently undoing any
+    // runtime option (here: the unlocked editor) whenever blame/presence state re-rendered.
+    const alice = await signIn(browser, "alice");
+    await createProject(alice.page, `Options ${Date.now()}`);
+    await connected(alice.page);
+    const joinUrl = await createShareLink(alice.page, "view only");
+    const guest = await openAsGuest(browser, joinUrl, "Mallory options");
+    await connected(guest.page);
+    await expect(guest.page.getByTestId("readonly-badge")).toBeVisible();
+    await guest.page.waitForFunction(() => (window as unknown as { monaco?: { editor: { getEditors(): unknown[] } } }).monaco?.editor.getEditors().length);
+
+    const isReadOnly = () =>
+      guest.page.evaluate(() => {
+        const m = (window as unknown as { monaco: { editor: { EditorOption: { readOnly: number }; getEditors(): { getOption(o: number): boolean }[] } } }).monaco;
+        return m.editor.getEditors()[0]!.getOption(m.editor.EditorOption.readOnly);
+      });
+    expect(await isReadOnly()).toBe(true);
+    await guest.page.evaluate(() => {
+      const m = (window as unknown as { monaco: { editor: { getEditors(): { updateOptions(o: object): void }[] } } }).monaco;
+      m.editor.getEditors()[0]!.updateOptions({ readOnly: false });
+    });
+    expect(await isReadOnly()).toBe(false);
+
+    // Force re-renders of the editor component, then let effects flush.
+    await guest.page.getByTestId("toggle-blame").click();
+    await guest.page.getByTestId("toggle-blame").click();
+    await expect(guest.page.getByTestId("toggle-blame")).toHaveAttribute("aria-pressed", /true|false/);
+    await expect.poll(isReadOnly, { intervals: [200], timeout: 1500 }).toBe(false);
+
+    await alice.context.close();
+    await guest.context.close();
+  });
+});
+
 test.describe("Phase 3: invite-only links", () => {
   test("the owner approves one person and rejects another", async ({ browser }) => {
     const alice = await signIn(browser, "alice");
