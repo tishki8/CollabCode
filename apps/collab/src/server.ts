@@ -5,6 +5,7 @@ import type { PrismaClient } from "@collabcode/db";
 import { authorize, sanitizeAwarenessState, type ConnContext } from "./auth";
 import { createPersistence } from "./persistence";
 import { createAuthorshipExtension } from "./authorship/extension";
+import { createInternalHandler } from "./internal";
 
 export interface CollabOptions {
   prisma: PrismaClient;
@@ -20,6 +21,7 @@ export interface CollabOptions {
 
 export function createCollabServer(opts: CollabOptions) {
   const { extension: authorship, tracker } = createAuthorshipExtension(opts.prisma, opts.authorship);
+  const internal = createInternalHandler({ secret: opts.secret, tracker });
   const extensions: Extension[] = [authorship, new Database(createPersistence(opts.prisma))];
   if (opts.redisUrl) {
     const url = new URL(opts.redisUrl);
@@ -56,12 +58,14 @@ export function createCollabServer(opts: CollabOptions) {
     },
 
     // Plain HTTP health check for Docker / load balancers.
-    async onRequest({ request, response }) {
+    async onRequest({ request, response, instance }) {
       if (request.url === "/health") {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify({ status: "ok", service: "collab" }));
         throw null; // an empty rejection tells Hocuspocus we've already answered
       }
+      // Service-to-service calls from the API (signed; see internal.ts).
+      if (await internal(instance, request, response)) throw null;
     },
   });
 

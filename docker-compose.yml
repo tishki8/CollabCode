@@ -62,6 +62,9 @@ services:
       WEB_ORIGIN: http://localhost:3000
       # The collab server as the BROWSER reaches it (published port on the host).
       COLLAB_PUBLIC_URL: ${COLLAB_PUBLIC_URL:-ws://localhost:1234}
+      # The collab server as the API reaches it on the compose network: used for the signed
+      # /internal calls (accept a suggestion, restore a checkpoint). Not exposed to browsers.
+      COLLAB_INTERNAL_URL: http://collab:1234
     command: pnpm --filter @collabcode/api start
     ports: ["4000:4000"]
     depends_on:

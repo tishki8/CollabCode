@@ -34,6 +34,8 @@ export interface AttributionRange {
   user: string;
   /** Server time (ms since epoch) the range was written. */
   at: number;
+  /** Credited to the owner after a crash lost their own record (someone else re-sent the text). */
+  recovered?: boolean;
 }
 
 /** Lookup of attribution ranges by Yjs item id. */
@@ -105,6 +107,7 @@ export interface Piece {
   length: number;
   user: string | null;
   at: number | null;
+  recovered?: boolean;
 }
 
 /**
@@ -125,7 +128,7 @@ export function attribute(
       const range = index.lookup(run.client, clock);
       if (range) {
         const len = Math.min(range.end, end) - clock;
-        pieces.push({ offset, length: len, user: range.user, at: range.at });
+        pieces.push({ offset, length: len, user: range.user, at: range.at, ...(range.recovered ? { recovered: true } : {}) });
         clock += len;
         offset += len;
       } else {
@@ -147,6 +150,8 @@ export interface LineAuthor {
   chars: number;
   /** Latest time they wrote something on this line. */
   lastAt: number | null;
+  /** Some of their text here was credited to them after crash recovery. */
+  recovered?: boolean;
 }
 
 export interface LineBlame {
@@ -175,7 +180,7 @@ export function blameLines(text: string, pieces: readonly Piece[]): LineBlame[] 
     return lo;
   };
 
-  type Acc = { nonWs: number; all: number; lastAt: number | null };
+  type Acc = { nonWs: number; all: number; lastAt: number | null; recovered: boolean };
   const perLine: Map<string, Acc>[] = lineStarts.map(() => new Map());
 
   for (const p of pieces) {
@@ -187,10 +192,11 @@ export function blameLines(text: string, pieces: readonly Piece[]): LineBlame[] 
       let nonWs = 0;
       for (let i = pos; i < segEnd; i++) if (!/\s/.test(text[i]!)) nonWs++;
       const key = p.user ?? "";
-      const acc = perLine[li]!.get(key) ?? { nonWs: 0, all: 0, lastAt: null };
+      const acc = perLine[li]!.get(key) ?? { nonWs: 0, all: 0, lastAt: null, recovered: false };
       acc.nonWs += nonWs;
       acc.all += segEnd - pos;
       if (p.at !== null) acc.lastAt = Math.max(acc.lastAt ?? 0, p.at);
+      if (p.recovered) acc.recovered = true;
       perLine[li]!.set(key, acc);
       pos = segEnd;
     }
@@ -202,7 +208,7 @@ export function blameLines(text: string, pieces: readonly Piece[]): LineBlame[] 
         ([ka, a], [kb, b]) =>
           b.nonWs - a.nonWs || b.all - a.all || (b.lastAt ?? 0) - (a.lastAt ?? 0) || (ka < kb ? -1 : ka > kb ? 1 : 0),
       )
-      .map(([key, a]) => ({ user: key === "" ? null : key, chars: a.nonWs, lastAt: a.lastAt }));
+      .map(([key, a]) => ({ user: key === "" ? null : key, chars: a.nonWs, lastAt: a.lastAt, ...(a.recovered ? { recovered: true } : {}) }));
     return { line: i + 1, authors, main: authors[0] ?? null, others: Math.max(0, authors.length - 1) };
   });
 }

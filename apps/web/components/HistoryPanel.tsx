@@ -198,6 +198,21 @@ export function HistoryPanel({ projectId, fileId, fileName }: { projectId: strin
                   <span className="text-red-800 dark:text-red-400">−{e.removed.toLocaleString()}</span> characters
                   {(e.linesAdded > 0 || e.linesRemoved > 0) && ` · +${e.linesAdded}/−${e.linesRemoved} lines`}
                 </span>
+                {e.origin === "suggestion-accept" && (
+                  <span className="rounded border border-slate-400 px-1.5 text-xs" data-testid="event-origin">accepted suggestion</span>
+                )}
+                {e.origin === "restore" && (
+                  <span className="rounded border border-slate-400 px-1.5 text-xs" data-testid="event-origin">restore</span>
+                )}
+                {e.recovered && (
+                  <span
+                    className="rounded border border-amber-600 px-1.5 text-xs"
+                    title="Their own record was lost in a crash; this text was re-sent by someone else and credited to them"
+                    data-testid="event-recovered"
+                  >
+                    attributed after recovery
+                  </span>
+                )}
               </li>
             ))}
           </ol>

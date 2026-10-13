@@ -75,7 +75,7 @@ export const authorshipRoutes =
         where: { fileId, ...(q.after ? { id: { gt: BigInt(q.after) } } : {}) },
         orderBy: { id: "asc" },
         take: q.limit + 1,
-        select: { id: true, userId: true, clientId: true, clockStart: true, clockEnd: true, createdAt: true }, // never the heavy `update`
+        select: { id: true, userId: true, clientId: true, clockStart: true, clockEnd: true, createdAt: true, recovered: true }, // never the heavy `update`
       });
       const hasMore = rows.length > q.limit;
       const page = hasMore ? rows.slice(0, q.limit) : rows;
@@ -85,7 +85,7 @@ export const authorshipRoutes =
         users,
         ranges: page
           .filter((r) => r.clockEnd > r.clockStart)
-          .map((r) => [Number(r.clientId), r.clockStart, r.clockEnd, index.get(r.userId)!, r.createdAt.getTime(), String(r.id)]),
+          .map((r) => [Number(r.clientId), r.clockStart, r.clockEnd, index.get(r.userId)!, r.createdAt.getTime(), String(r.id), r.recovered ? 1 : 0]),
         lastEventId: page.length ? String(page[page.length - 1]!.id) : null,
         hasMore,
       };
@@ -115,7 +115,7 @@ export const authorshipRoutes =
         },
         orderBy: { id: "desc" },
         take: q.limit + 1,
-        select: { id: true, userId: true, startedAt: true, createdAt: true, added: true, removed: true, linesAdded: true, linesRemoved: true },
+        select: { id: true, userId: true, startedAt: true, createdAt: true, added: true, removed: true, linesAdded: true, linesRemoved: true, origin: true, recovered: true },
       });
       const more = rows.length > q.limit;
       const page = more ? rows.slice(0, q.limit) : rows;
@@ -130,6 +130,8 @@ export const authorshipRoutes =
           removed: r.removed,
           linesAdded: r.linesAdded,
           linesRemoved: r.linesRemoved,
+          origin: r.origin,
+          recovered: r.recovered,
         })),
         nextBefore: more ? String(page[page.length - 1]!.id) : null,
       };
@@ -263,13 +265,13 @@ export const authorshipRoutes =
         if (snap.state.byteLength > MAX_SNAPSHOT_BYTES) continue;
         const ranges = await prisma.docEvent.findMany({
           where: { fileId: snap.fileId, clockEnd: { gt: 0 } },
-          select: { userId: true, clientId: true, clockStart: true, clockEnd: true, createdAt: true },
+          select: { userId: true, clientId: true, clockStart: true, clockEnd: true, createdAt: true, recovered: true },
         });
         const doc = new Y.Doc();
         Y.applyUpdate(doc, new Uint8Array(snap.state));
         const text = doc.getText("content");
         const index = new AttributionIndex(
-          ranges.filter((r) => r.clockEnd > r.clockStart).map((r) => ({ client: Number(r.clientId), start: r.clockStart, end: r.clockEnd, user: r.userId, at: r.createdAt.getTime() })),
+          ranges.filter((r) => r.clockEnd > r.clockStart).map((r) => ({ client: Number(r.clientId), start: r.clockStart, end: r.clockEnd, user: r.userId, at: r.createdAt.getTime(), recovered: r.recovered })),
         );
         for (const line of blameLines(text.toString(), attribute(textRuns(text), index))) {
           if (line.main?.user && line.main.chars > 0) out.set(line.main.user, (out.get(line.main.user) ?? 0) + 1);

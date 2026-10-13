@@ -30,7 +30,7 @@ export function useAttribution(fileId: string, enabled: boolean) {
             const q = after.current ? `?after=${after.current}` : "";
             const res = await api<AttributionResponse>("GET", `/files/${fileId}/attribution${q}`);
             res.users.forEach((u) => users.set(u.id, u));
-            index.add(res.ranges.map(([client, start, end, u, at]) => ({ client, start, end, user: res.users[u]!.id, at })));
+            index.add(res.ranges.map(([client, start, end, u, at, , recovered]) => ({ client, start, end, user: res.users[u]!.id, at, recovered: recovered === 1 })));
             if (res.lastEventId) after.current = res.lastEventId;
             if (res.ranges.length > 0 || res.users.length > 0) setVersion((v) => v + 1);
             if (!res.hasMore) break;

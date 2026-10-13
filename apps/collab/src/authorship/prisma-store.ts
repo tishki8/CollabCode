@@ -36,6 +36,8 @@ export function createPrismaStore(prisma: PrismaClient): AuthorshipStore {
           removed: r.removed,
           linesAdded: r.linesAdded,
           linesRemoved: r.linesRemoved,
+          origin: r.origin,
+          recovered: r.recovered,
           startedAt: r.startedAt,
           createdAt: r.createdAt,
         })),

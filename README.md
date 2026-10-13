@@ -4,12 +4,12 @@ A browser-based collaborative code editor for small teams. Open a shared project
 together in real time, run the code, and always see **who wrote what**, like Google Docs,
 but for code, and without depending on anyone's machine being online.
 
-> **Status: Phase 4 of 7 (authorship tracking).** Sign-in, projects, file tree, live multi-user
-> editing with named cursors, share links with guests / approval / expiry / roles, and now
-> **who wrote what**: a blame view, per-person contribution colours, per-person history with a
-> diff, and a project contribution timeline. Review tools (comments, suggestions, checkpoints),
-> code execution and export arrive in later phases. Sections marked *(planned)* describe the
-> target design.
+> **Status: Phase 5 of 7 (review tools).** Sign-in, projects, file tree, live multi-user
+> editing with named cursors, share links with guests / approval / expiry / roles, **who wrote
+> what** (blame, contribution colours, per-person history, contribution timeline), and now
+> **review tools**: suggestions that editors accept or reject, inline comment threads, named
+> checkpoints with restore, and session replay. Code execution and export arrive in later phases.
+> Sections marked *(planned)* describe the target design.
 
 ## Architecture
 
@@ -21,6 +21,7 @@ flowchart LR
   API --> PG[("PostgreSQL")]
   Web --> PG
   Collab --> PG
+  API -->|"signed /internal calls"| Collab
   Collab <-->|"pub/sub"| Redis[("Redis")]
   API -->|"BullMQ (Phase 6)"| Redis
   Redis --> Runner["Runner<br/>sandboxed Docker runs"]
@@ -30,8 +31,8 @@ flowchart LR
 | Path | What it is | Status |
 |---|---|---|
 | `apps/web` | Next.js (App Router) + Tailwind UI, Auth.js sign-in, Monaco editor | Phase 1-2 |
-| `apps/api` | Fastify REST API: projects, files, share links, collab tokens, permissions | Phase 1-2 |
-| `apps/collab` | Hocuspocus (Yjs) WebSocket server: auth, persistence, Redis sync | Phase 2 |
+| `apps/api` | Fastify REST API: projects, files, share links, collab tokens, permissions, suggestions, comments, checkpoints, replay data | Phase 1-5 |
+| `apps/collab` | Hocuspocus (Yjs) WebSocket server: auth, persistence, Redis sync, authorship, signed `/internal` edit endpoints | Phase 2-5 |
 | `apps/runner` | BullMQ worker running code in locked-down containers | placeholder |
 | `packages/shared` | zod schemas, types, permission matrix, palette | Phase 1 |
 | `packages/db` | Prisma schema, migrations, seed script | Phase 1 |
@@ -76,7 +77,19 @@ port 1234 (the collab WebSocket); change `COLLAB_PUBLIC_URL` if you expose it el
    a legend. Open the **History** tab, choose a person and a time range, and press *Show what
    ... changed* for a diff of exactly their additions and removals. Open **Contributions** for a
    timeline lane per person plus lines added/removed, active time and "lines still theirs".
-9. Stop and restart the stack (`docker compose restart collab`): reopen the file and the text is
+9. **Suggestions and comments (Phase 5).** Make a link with the *comment* role and open it as Bob.
+   Bob cannot type, but can select text and press **Suggest change** (type the replacement) or
+   **Comment** in the Review sidebar. Alice sees the suggestion highlighted in the text and in her
+   sidebar (within ~3 s) and presses **Accept** (the text changes for everyone; open **History**: the
+   change is credited to *Bob*, tagged "accepted suggestion") or **Reject**. On the **Comments** tab
+   Alice replies to Bob's thread and presses **Resolve**; Bob sees both. Add lines above the
+   commented text: the thread and any open suggestion stay on their text.
+10. **Checkpoints and replay (Phase 5).** Open the **Checkpoints** tab, name a checkpoint, then
+   break the file. Press **Restore project** (owner only) and confirm: the file is back, the History
+   tab shows a "restore" event credited to you, and a "Before restoring ..." checkpoint was saved
+   so you can undo it. Open **Replay**: press play, change the speed, drag the slider, pick a
+   person under *Step through changes by*, or *Start from* a checkpoint.
+11. Stop and restart the stack (`docker compose restart collab`): reopen the file and the text is
    still there. Edits made while briefly offline (e.g. pause the network in dev tools) merge when
    the connection returns. Hover again: the authors are the same.
 
@@ -123,6 +136,7 @@ CI (`.github/workflows/ci.yml`) runs lint, type-check and tests against a Postgr
 | `REDIS_URL` | collab, runner (later) | Redis connection string. When set, collab instances share documents and presence through Redis pub/sub, so you can run several. Optional for a single instance |
 | `COLLAB_JWT_SECRET` | api, collab | Shared secret (min. 32 chars) that signs/verifies the short-lived collab tokens. Both services refuse to start without it |
 | `COLLAB_PUBLIC_URL` | api | Collab WebSocket URL as the browser reaches it (default `ws://localhost:1234`) |
+| `COLLAB_INTERNAL_URL` | api | Collab server as the API reaches it, server to server (default `http://localhost:1234`; compose sets `http://collab:1234`). Used for the signed `/internal` calls behind accepting suggestions, checkpoints and restore |
 | `WEB_ORIGIN` | api | Origin of the web app; writes from other origins are rejected (CSRF check) |
 | `API_URL` | web | Where the web server (and the `/api/v1` rewrite) reaches the API |
 | `API_PORT` | api | API listen port (default 4000) |
@@ -242,12 +256,31 @@ that delivers update 1 contains all 6 clocks, including the 3 that update 2 deli
 **ClientID ownership.** The first authenticated user whose connection uses a clientID owns it; the
 claim is persisted (`YClient`, first writer wins, so it also holds across server instances and
 restarts). A clientID is claimed by an awareness (cursor) update or by delivering new items. An
-update that introduces **new** items under a clientID owned by someone else is rejected: the
-document connection is closed (Hocuspocus close reason `Forbidden`, code 4403) and the attempt is
-logged with file, clientID, owner and offender. This stops a user pre-sending text under another
-user's id, which would either steal credit for that text or "squat" the id so the real owner's
-later edits collide with the planted items and are silently dropped by Yjs. Re-sending items that
-are already on record (a normal reconnect sync) is allowed and never re-attributed.
+awareness update that claims someone else's clientID is rejected (the connection to that document is
+closed with Hocuspocus close reason `Forbidden`, code 4403, and the attempt is logged).
+
+*Recovery rule (changed in Phase 5).* New items under a clientID owned by **someone else** are no
+longer rejected. The first version of this rule closed the connection, but after a crash that is the
+wrong outcome: the owner's unflushed events are gone, other people's browsers still hold the owner's
+text and re-send it when they reconnect, and those innocent users were disconnected until the author
+came back. Now the update is accepted and applied, the new range is credited to the **owner of the
+clientID (from the persisted claim)**, never to whoever delivered it, and the event is flagged
+`recovered` and logged. The UI says so: the blame hover shows "attributed after recovery" and the
+history timeline shows an "attributed after recovery" badge. Deletions in that same update are still
+credited to the person who sent it. Re-sending items already on record is unchanged (not new, never
+re-attributed). Tests: `tracker.test.ts` (crash recovery with a fresh tracker over the persisted
+claim), `authorship.integration.test.ts` (over real WebSockets, including a simulated crash where the
+last events and snapshot are deleted and Bob re-syncs).
+
+*The trade-off, stated plainly.* The old rule also stopped a deliberate attack: pre-sending text
+under another user's clientID. With the recovery rule that text is accepted, and credited to the
+clientID's owner (flagged `recovered`, so it is visible and logged, but it is not credited to the
+attacker). It can also "squat" the id, so the owner's browser, on seeing foreign items under its own
+id, switches to a fresh clientID (Yjs does this itself) and carries on; whatever it had typed at the
+exact colliding clocks is the one thing that can be lost. Only people who can already edit the file
+can do this, and the evidence stays in the log, but the attribution of such text should be read as
+"recovered", not as proof. We chose this over disconnecting people, because the alternative punishes
+users who did nothing wrong.
 
 **Batching.** Keystrokes are merged in memory per (file, user, clientID) and written after 1.5 s of
 quiet or at most every 5 s, when someone disconnects, on shutdown, and **before every document
@@ -266,8 +299,9 @@ screen. Text with no record (written before Phase 4) is shown as *unknown author
 **History and the diff.** The timeline pages through `DocEvent` rows. The per-person diff replays
 the file's events from the beginning onto a document that keeps deleted text, ordered by when each
 batch started, and reports exactly what the person inserted and removed with line numbers. Replay is
-capped at 20,000 events (a clear error asks for an earlier end date) until Phase 5 adds checkpoints
-to replay from.
+capped at 20,000 events (a clear error asks for an earlier end date). The session-replay player
+(Phase 5) does not have this problem because it can start from a checkpoint; the per-person diff still
+replays from the beginning.
 
 **Contribution summary.** "Lines" means newline characters typed or removed (so it adds up across
 batches). Active time sums a person's working sessions, bridging gaps under 5 minutes. People are
@@ -283,18 +317,115 @@ snapshot of each file.
 - **Times are server receive times.** Text typed offline shows the time it synced, because client
   clocks cannot be trusted.
 - **Crash window.** A hard crash can lose up to ~5 s of buffered attribution. If other users' clients
-  then re-send text that never reached the log, the ownership rule rejects *their* update (the
-  original author's client heals it on reconnect) and closes their document connection until then.
-  Graceful shutdowns flush everything.
+  then re-send that text, it is accepted and credited to its owner, flagged "attributed after
+  recovery" (see the recovery rule above), but the original timestamps are gone: it shows the time of
+  the re-send. Graceful shutdowns flush everything.
 - **ClientID collisions** (two users randomly picking the same 32-bit id, about 1 in 4 billion per
-  pair) would get the second user's connection rejected until they reload.
-- **History** replays from the start (20,000-event cap) and orders batches by start time, so under
+  pair) would credit the second user's text to the first, flagged as recovered.
+- **The per-person history diff** replays from the start (20,000-event cap) and orders batches by start time, so under
   heavy concurrent editing the line numbers are "as of replay" and approximate.
 - The event log is append-only with no retention or compaction yet; "lines still theirs" skips
   files over 2 MB and looks at the first 100 files.
 - Several collab servers share ownership through the database, but each keeps its own in-memory
   "already recorded" ranges (loaded when it opens a file), so a very rare cross-server race is
   resolved by the database claim.
+
+### Review tools (Phase 5)
+
+**Suggestions are an overlay, not text in the document.** A suggestion is a row (author, the
+anchored range, the text it replaces, the replacement) shown on top of the editor: the range is
+highlighted with a dashed underline and a tag naming the author ("✎ BD suggests"), hovering shows
+the change, and the Suggestions tab of the Review sidebar lists them with old and new text. The file
+only changes when an editor or the owner accepts one. Commenters can suggest (they select text, press
+**Suggest change**, type the replacement) but can never edit directly; viewers can read them.
+Selecting nothing and suggesting inserts at the cursor. Editors can also suggest.
+
+*Accepting is a normal edit credited to the suggester.* The API asks the collab server (a signed
+`/internal/edit` call) to apply the replacement to the live document. The server builds the edit on a
+scratch copy under a fresh clientID, runs it through the same authorship path as a typed edit
+(`tracker.onDelivery`, before applying), and broadcasts it. So the history shows it as the
+**suggester's** change (event origin `suggestion-accept`, badge "accepted suggestion"), not the
+accepter's. It appears live for everyone connected. Rejecting changes nothing; the author can
+withdraw their own. Claiming is atomic (`UPDATE ... WHERE status = 'OPEN'`), so two editors clicking
+Accept cannot apply it twice; if the call to the collab server fails, the suggestion goes back to open.
+
+**Anchors are Yjs RelativePositions, never line/column.** `packages/shared/src/review/anchors.ts`.
+A relative position names the *character* (its immutable item id) the position sits next to, so it
+follows that character through concurrent edits. The start is attached to the first character of the
+range and the end to the last one: text typed right before or after stays outside, text typed inside
+stretches the range, deleting part of it shrinks it, and deleting all of it makes a suggestion
+**stale** (out of date; it cannot be applied and says so) while a comment thread keeps its stored
+quote. A selection of nothing (an insertion point) uses one position for both ends. Anchors are
+stored as opaque bytes and resolved against the live document, by the collab server when it matters
+(accept, create) and by each browser for drawing. Unit tests make a range, edit above, before, after
+and inside it concurrently from another peer, and check it still names the same text. If the text
+inside a suggestion's range changed after it was made, the sidebar warns "The text has changed since
+this was suggested" and accepting replaces whatever is in the range now.
+
+**Inline comments.** Select text (or put the cursor on a line) and press **Comment**. Threads are
+anchored the same way, shown with a yellow dotted underline and a 💬 count, listed in the Comments
+tab with their replies, newest state first. Everyone who can comment can reply (commenters included).
+Resolve/Reopen is for editors and the owner, and for the person who started the thread. Resolved
+threads move under "Show resolved". Clicking a thread or suggestion selects its text in the editor.
+Comments are plain text, rendered as text (never HTML), capped at 4,000 characters, 200 per thread,
+500 threads per file. Suggestions and comments refresh by polling every 2.5 s.
+
+**Checkpoints.** The Checkpoints tab creates a named snapshot of every file (editors and the owner).
+The API first reads each file's last event id, then asks the collab server to flush (event buffers and
+the document snapshot are written to the database immediately, so text typed a moment ago is
+included), then copies the snapshots. A checkpoint may contain a few events newer than its recorded
+event id; replaying them on top later is harmless because applying a Yjs update twice changes
+nothing. **Restore** (owner only, as the permission matrix already said) works on the whole project or
+on the open file, behind an explicit confirmation. A restore:
+  1. first saves an automatic safety checkpoint ("Before restoring ..."), so it can be undone from
+     the same screen;
+  2. sets each file's text to the checkpoint's with the *smallest single replacement* (common start
+     and end untouched), applied by the collab server as an edit **credited to the restorer** with
+     event origin `restore`, so it is in the history and in blame like any other change;
+  3. for the whole project, brings back files that were deleted since (renaming to `name (restored)`
+     on a clash) and removes (soft-deletes, so history keeps working) files created since.
+Folder renames and moves are not reverted (restore works per file id).
+
+**Session replay.** The Replay tab plays a file's history from the event log: play/pause, speed
+(0.5x to 16x), a scrubber (a native slider, keyboard operable, with "Change N of M"), previous/next,
+and a **Step through changes by** filter. The filter selects whose changes are the steps; everyone
+else's changes are still applied silently, because Yjs updates depend on each other and dropping some
+would corrupt the text, so the text shown is always correct. "Start from" offers the beginning and
+every checkpoint containing the file, with the number of changes to load from each. Starting from a
+checkpoint loads the checkpoint's snapshot plus only the events after its recorded event id, so long
+histories no longer have to be replayed from the beginning (the picker defaults to the latest
+checkpoint when the file has more than 2,000 changes, and a request over 20,000 changes is refused
+with a hint to pick a later checkpoint). The player keeps a keyframe every 100 events so scrubbing
+backwards does not start over. The delay between two changes is their real gap squeezed into
+0.15-1.5 s, divided by the speed.
+
+**Security notes.** `suggestion:create` / `comment:create` come from the role in the database for
+every request (never the client); non-members get 404 and viewers 403. The collab server's
+`/internal` endpoints are called only by the API and require an HMAC of `timestamp.body` made with the
+shared `COLLAB_JWT_SECRET` (60 s window, constant-time compare); they are on the same port as the
+WebSocket, so **do not expose `/internal` through your reverse proxy** (only `/` WebSocket and
+`/health` need to be public). Request bodies are validated with zod and capped.
+
+### Known limitations (review tools)
+
+- **No type-to-suggest mode.** Suggestions are made from a selection and a replacement box, not by
+  typing "as a suggestion" directly in the text.
+- **Polling, not push.** Other people's suggestions, comments and checkpoints show up within about
+  2.5 s (the replay and checkpoint tabs load when opened).
+- **Accept replaces what is in the range now.** If the text changed since the suggestion was made, you
+  are warned, not blocked. A suggestion that covered only text that has since been deleted is stale.
+- **Comments cannot be edited or deleted** yet, and there is no @-mentioning or notifications.
+- **Restore is owner-only** (the permission matrix since Phase 1); editors can create checkpoints.
+  Folder structure changes (renames, moves) are not reverted by a restore, and a whole-project
+  restore removes files created since the checkpoint (undoable from the safety checkpoint).
+- **Checkpoints store full snapshots** of every file each time (no deduplication), capped at 200 per
+  project, so very large projects with many checkpoints use real space.
+- **Replay** shows text only (no syntax colouring), steps through *saved* events (the last few seconds
+  of typing appear after the 1.5-5 s batch is written, or immediately when a checkpoint is made), and
+  shows at most 4,000 lines.
+- Server edits go to whichever collab instance receives the API call; other instances pick the change
+  up through Redis like any other update. A multi-instance deployment should route `/internal` to one
+  instance or any instance (both work), but `/internal/flush` only flushes the instance it reaches.
 
 ### Known limitations
 

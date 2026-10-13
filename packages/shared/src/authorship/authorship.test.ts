@@ -112,30 +112,33 @@ describe("clientID ownership (anti-forgery)", () => {
     expect(stolen.toBind).toEqual([]); // nothing is bound by a rejected attempt
   });
 
-  it("rejects Bob pre-sending text under Alice's clientID, leaving the document and attribution untouched", () => {
+  it("accepts Bob re-sending text under Alice's clientID and credits it to Alice, flagged as recovered (nobody is rejected)", () => {
     const s = new SimServer();
     const alice = new SimClient("alice", 1001, s);
     alice.typeKeys(0, "real");
     alice.send(); // alice now owns client 1001
 
-    // Bob hand-builds items under Alice's clientID, continuing at the clocks she is about to use.
-    // (A real Yjs client would silently switch to a new clientID on seeing foreign items under its own,
-    // so the forgery is built as a fresh document that claims her id, like a hostile client would.)
-    const forged = new Y.Doc();
-    forged.clientID = 1001;
-    forged.getText("content").insert(0, "FORGED"); // clocks 0..5: clocks 4..5 are new to the server
-    const forgedUpdate = Y.encodeStateAsUpdate(forged);
+    // Bob holds items under Alice's clientID that the server has no record of (e.g. her unflushed
+    // events were lost in a crash). Built as a fresh document that uses her id.
+    const resent = new Y.Doc();
+    resent.clientID = 1001;
+    resent.getText("content").insert(0, "REAL-LOST"); // clocks 0..8: clocks 4..8 are new to the server
+    const resentUpdate = Y.encodeStateAsUpdate(resent);
 
-    expect(() => s.deliver("bob", forgedUpdate)).toThrow(OwnershipViolation);
-    expect(s.doc.getText("content").toString()).toBe("real"); // never applied
-    expect(s.index.lookup(1001, 4)).toBeNull(); // and nobody got credit for it
+    const out = s.deliver("bob", resentUpdate);
+    expect(out.ranges).toEqual([expect.objectContaining({ client: 1001, start: 4, end: 9 })]);
+    expect(s.index.lookup(1001, 4)).toMatchObject({ user: "alice", recovered: true }); // Alice's, not Bob's
+    expect(s.index.lookup(1001, 0)!.recovered).toBeUndefined(); // her original record is untouched
     expect(s.owners.get(1001)).toBe("alice");
+    expect(s.index.lookup(2002, 0)).toBeNull(); // Bob got no credit
 
-    // Alice's next real keystrokes under that id still work: she was not blocked
+    // Alice is not blocked either. (Yjs moves her client to a fresh clientID on seeing items under her
+    // own id that she did not write; her new text is attributed to her under the new id.)
     alice.sync();
-    alice.type(4, "!");
-    expect(alice.send()!.ranges[0]).toMatchObject({ client: 1001, start: 4, end: 5 });
-    expect(s.doc.getText("content").toString()).toBe("real!");
+    alice.type(alice.text.length, "!");
+    const next = alice.send()!;
+    expect(s.index.lookup(next.ranges[0]!.client, next.ranges[0]!.start)).toMatchObject({ user: "alice" });
+    expect(s.index.lookup(next.ranges[0]!.client, next.ranges[0]!.start)!.recovered).toBeUndefined();
   });
 
   it("allows relaying already-recorded items (a normal reconnect sync), even by another user", () => {

@@ -13,6 +13,9 @@ import { shareLinkRoutes } from "./routes/share-links";
 import { collabRoutes } from "./routes/collab";
 import { meRoutes } from "./routes/me";
 import { authorshipRoutes } from "./routes/authorship";
+import { reviewRoutes } from "./routes/review";
+import { checkpointRoutes } from "./routes/checkpoints";
+import { createCollabClient, noCollab, type CollabClient } from "./services/collab";
 
 export interface AppDeps {
   prisma: PrismaClient;
@@ -22,6 +25,11 @@ export interface AppDeps {
   collabSecret: string;
   /** WebSocket URL of the collab server as seen from the browser. */
   collabPublicUrl: string;
+  /**
+   * How the API reaches the collab server's signed /internal endpoints (accepting suggestions,
+   * restoring versions, checkpoints). Give a URL, or an object (tests use an in-memory one).
+   */
+  collab?: CollabClient | { url: string };
   /**
    * How many reverse proxies sit in front of the API (0 = none). The web app proxies browser
    * requests to the API, so with 1 the real client address is the one the proxy appended to
@@ -112,6 +120,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(fileRoutes(ctx));
   await app.register(meRoutes(ctx));
   await app.register(authorshipRoutes(ctx));
+  const collab = !deps.collab ? noCollab : "url" in deps.collab ? createCollabClient(deps.collab.url, deps.collabSecret) : deps.collab;
+  await app.register(reviewRoutes(ctx, collab));
+  await app.register(checkpointRoutes(ctx, collab));
   await app.register(shareLinkRoutes(ctx));
   await app.register(collabRoutes(ctx, { secret: deps.collabSecret, publicUrl: deps.collabPublicUrl }));
 

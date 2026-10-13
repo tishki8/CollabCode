@@ -22,14 +22,17 @@ export class SimServer {
       (c) => this.covered.get(c) ?? [],
       (c) => Y.getState(this.doc.store, c),
     );
-    const verdict = checkOwnership(ranges.map((r) => r.client), this.owners, user);
-    if (verdict.violation) throw verdict.violation;
+    // Unowned clientIDs are claimed by the deliverer. Items under SOMEONE ELSE's clientID are not
+    // rejected (after a crash, other people legitimately re-send the owner's lost text): they are
+    // credited to the owner and flagged as recovered.
+    const verdict = checkOwnership(ranges.filter((r) => (this.owners.get(r.client) ?? user) === user).map((r) => r.client), this.owners, user);
     verdict.toBind.forEach((c) => this.owners.set(c, user));
     const removed = removedBy(update, this.doc); // measured BEFORE applying
     this.now += 1_000;
     for (const r of ranges) {
       this.covered.set(r.client, addInterval(this.covered.get(r.client) ?? [], [r.start, r.end]));
-      this.index.add([{ client: r.client, start: r.start, end: r.end, user, at: this.now }]);
+      const owner = this.owners.get(r.client)!;
+      this.index.add([{ client: r.client, start: r.start, end: r.end, user: owner, at: this.now, ...(owner !== user ? { recovered: true } : {}) }]);
     }
     Y.applyUpdate(this.doc, update, "remote");
     this.log.push({ user, ranges, removed });

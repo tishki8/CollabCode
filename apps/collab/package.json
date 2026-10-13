@@ -25,6 +25,7 @@
     "@hocuspocus/extension-database": "^4.7.0",
     "@hocuspocus/extension-redis": "^4.7.0",
     "@hocuspocus/server": "^4.7.0",
-    "yjs": "^13.6.33"
+    "yjs": "^13.6.33",
+    "zod": "^4.6.6"
   }
 }

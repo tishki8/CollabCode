@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { describeLine, escapeMarkdown, formatAgo, lineHoverMarkdown } from "./describe";
-import type { LineBlame } from "./blame";
+import type { LineAuthor, LineBlame } from "./blame";
 
 const people: Record<string, { name: string; isGuest: boolean }> = {
   a: { name: "Alice Demo", isGuest: false },
@@ -69,6 +69,14 @@ describe("lineHoverMarkdown", () => {
   });
 });
 
+describe("recovered attribution", () => {
+  it("the hover says the text was attributed after recovery", () => {
+    const l = line([{ ...author("a", 10), recovered: true } as LineAuthor]);
+    expect(lineHoverMarkdown(l, personOf, NOW, abs)).toContain("attributed after recovery");
+    expect(lineHoverMarkdown(line([author("a", 10)]), personOf, NOW, abs)).not.toContain("recovered");
+  });
+});
+
 describe("describeLine", () => {
   it("summarises a line", () => {
     expect(describeLine(line([author("a", 10), author("b", 3)]), personOf)).toEqual({
@@ -76,6 +84,7 @@ describe("describeLine", () => {
       mainIsGuest: false,
       at: NOW - 300_000,
       others: 1,
+      recovered: false,
       otherNames: ["Bob Demo"],
     });
   });

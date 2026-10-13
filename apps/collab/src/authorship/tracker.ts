@@ -23,6 +23,10 @@ export interface NewEvent {
   removed: number;
   linesAdded: number;
   linesRemoved: number;
+  /** "edit" | "suggestion-accept" | "restore" */
+  origin: string;
+  /** Credited to the clientID's owner although someone else delivered it (see onDelivery). */
+  recovered: boolean;
   startedAt: Date;
   createdAt: Date;
 }
@@ -56,6 +60,8 @@ export interface TrackerOptions {
 interface Batch {
   userId: string;
   clientId: number;
+  origin: string;
+  recovered: boolean;
   /** Item ids inserted so far, [start, end); null for a batch that only deleted text. */
   range: [number, number] | null;
   updates: Uint8Array[];
@@ -83,7 +89,16 @@ interface DocState {
   flushing: Promise<void>;
 }
 
-const keyOf = (userId: string, clientId: number) => `${userId}:${clientId}`;
+const keyOf = (userId: string, clientId: number, origin: string, recovered: boolean) =>
+  `${userId}:${clientId}:${origin}:${recovered ? 1 : 0}`;
+
+/** One slice of a delivered update that belongs in a batch. */
+interface Target {
+  userId: string;
+  clientId: number;
+  range: NewRange | null;
+  recovered: boolean;
+}
 
 export class AuthorshipTracker {
   private docs = new Map<string, DocState>();
@@ -164,10 +179,26 @@ export class AuthorshipTracker {
   /**
    * A connection (authenticated as `userId`) delivers a Yjs update. Must be called BEFORE the update is
    * applied to `doc`, so new ranges and deleted text can be measured against the previous state.
-   * Throws OwnershipViolation to reject the update.
+   *
+   * New items under a clientID that nobody owns are claimed for `userId`. New items under a clientID
+   * owned by SOMEONE ELSE are not rejected: after a crash, the owner's unflushed events are gone while
+   * other people's clients still hold (and re-send) the owner's text, and disconnecting those innocent
+   * users would be wrong. The text is accepted and credited to the persisted owner of the clientID,
+   * flagged `recovered` ("attributed after recovery"), and the event is logged. The price: someone who
+   * deliberately plants text under another user's clientID gets it credited to that user (never to
+   * themselves), flagged as recovered; see README, "Authorship design".
+   *
+   * Throws OwnershipViolation only if a concurrent claim from another server instance wins the race.
    */
-  async onDelivery(fileId: string, doc: Y.Doc, userId: string, update: Uint8Array): Promise<void> {
+  async onDelivery(
+    fileId: string,
+    doc: Y.Doc,
+    userId: string,
+    update: Uint8Array,
+    opts: { origin?: string } = {},
+  ): Promise<void> {
     const st = this.state(fileId);
+    const origin = opts.origin ?? "edit";
 
     // Everything up to the first await runs synchronously, so two connections cannot both see the
     // same range as "new".
@@ -179,54 +210,58 @@ export class AuthorshipTracker {
     const deletes = hasDeletions(update);
     if (ranges.length === 0 && !deletes) return; // nothing new: a plain re-sync of known items
 
-    const verdict = checkOwnership(ranges.map((r) => r.client), st.owners, userId);
-    if (verdict.violation) {
-      this.log.warn(`[authorship] rejected update: ${verdict.violation.message}`, {
-        fileId,
-        clientId: verdict.violation.clientId,
-        owner: verdict.violation.owner,
-        attemptedBy: userId,
-        newRanges: ranges.length,
-      });
-      throw verdict.violation;
+    const targets: Target[] = [];
+    for (const r of ranges) {
+      const owner = st.owners.get(r.client);
+      if (owner !== undefined && owner !== userId) {
+        this.log.warn(`[authorship] crediting ${r.end - r.start} item(s) of clientID ${r.client} to its owner after recovery`, {
+          fileId,
+          clientId: r.client,
+          owner,
+          deliveredBy: userId,
+        });
+        targets.push({ userId: owner, clientId: r.client, range: r, recovered: true });
+      } else {
+        targets.push({ userId, clientId: r.client, range: r, recovered: false });
+      }
     }
+    const own = targets.filter((t) => !t.recovered);
 
     const removed = deletes ? removedBy(update, doc) : { chars: 0, lines: 0 };
     for (const r of ranges) st.covered.set(r.client, addInterval(st.covered.get(r.client) ?? [], [r.start, r.end]));
-    this.addToBatches(fileId, st, userId, update, ranges, removed);
+    // Deletions are the deliverer's work, whoever owns the clientIDs of the inserted text.
+    if (deletes && own.length === 0) targets.push({ userId, clientId: st.lastClientOf.get(userId) ?? 0, range: null, recovered: false });
+    this.addToBatches(fileId, st, update, targets, removed, origin);
 
     // Persist new clientID claims; the update is only applied once this resolves.
-    await this.claim(fileId, st, userId, ranges.map((r) => r.client), "update");
+    await this.claim(fileId, st, userId, own.map((t) => t.clientId), "update");
   }
 
   private addToBatches(
     fileId: string,
     st: DocState,
-    userId: string,
     update: Uint8Array,
-    ranges: NewRange[],
+    targets: Target[],
     removed: { chars: number; lines: number },
+    origin: string,
   ) {
-    const targets: { clientId: number; range: NewRange | null }[] =
-      ranges.length > 0
-        ? ranges.map((range) => ({ clientId: range.client, range }))
-        : [{ clientId: st.lastClientOf.get(userId) ?? 0, range: null }];
-
-    targets.forEach(({ clientId, range }, i) => {
-      let batch = st.batches.get(keyOf(userId, clientId));
+    let removalPlaced = false;
+    for (const { userId, clientId, range, recovered } of targets) {
+      let batch = st.batches.get(keyOf(userId, clientId, origin, recovered));
       // A batch must cover ONE contiguous range of ids; a jump starts a new batch.
       if (batch && range && batch.range && range.start !== batch.range[1]) {
         this.flushBatch(fileId, st, batch);
         batch = undefined;
       }
-      if (!batch) batch = this.newBatch(fileId, st, userId, clientId);
+      if (!batch) batch = this.newBatch(fileId, st, userId, clientId, origin, recovered);
       if (range) {
         batch.range = batch.range ? [batch.range[0], range.end] : [range.start, range.end];
         batch.added += range.added;
         batch.linesAdded += range.linesAdded;
       }
-      if (i === 0) {
-        batch.removed += removed.chars; // deletions are counted once, on the first batch
+      if (!recovered && !removalPlaced) {
+        removalPlaced = true;
+        batch.removed += removed.chars; // deletions are counted once, on the deliverer's first batch
         batch.linesRemoved += removed.lines;
       }
       batch.updates.push(update);
@@ -241,14 +276,16 @@ export class AuthorshipTracker {
       batch.idle = setTimeout(() => this.flushBatch(fileId, st, b), this.idleMs);
       batch.idle.unref?.();
       if (batch.bytes > this.maxBytes) this.flushBatch(fileId, st, batch);
-    });
+    }
   }
 
-  private newBatch(fileId: string, st: DocState, userId: string, clientId: number): Batch {
+  private newBatch(fileId: string, st: DocState, userId: string, clientId: number, origin: string, recovered: boolean): Batch {
     const now = this.now();
     const batch: Batch = {
       userId,
       clientId,
+      origin,
+      recovered,
       range: null,
       updates: [],
       bytes: 0,
@@ -263,7 +300,7 @@ export class AuthorshipTracker {
     };
     batch.max.unref?.();
     clearTimeout(batch.idle);
-    st.batches.set(keyOf(userId, clientId), batch);
+    st.batches.set(keyOf(userId, clientId, origin, recovered), batch);
     return batch;
   }
 
@@ -271,7 +308,7 @@ export class AuthorshipTracker {
   private flushBatch(fileId: string, st: DocState, batch: Batch): Promise<void> {
     clearTimeout(batch.idle);
     clearTimeout(batch.max);
-    const key = keyOf(batch.userId, batch.clientId);
+    const key = keyOf(batch.userId, batch.clientId, batch.origin, batch.recovered);
     if (st.batches.get(key) === batch) st.batches.delete(key);
     st.outbox.push({
       fileId,
@@ -284,6 +321,8 @@ export class AuthorshipTracker {
       removed: batch.removed,
       linesAdded: batch.linesAdded,
       linesRemoved: batch.linesRemoved,
+      origin: batch.origin,
+      recovered: batch.recovered,
       startedAt: new Date(batch.startedAt),
       createdAt: new Date(batch.lastAt),
     });
