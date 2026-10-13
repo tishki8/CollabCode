@@ -12,6 +12,7 @@ import { fileRoutes } from "./routes/files";
 import { shareLinkRoutes } from "./routes/share-links";
 import { collabRoutes } from "./routes/collab";
 import { meRoutes } from "./routes/me";
+import { authorshipRoutes } from "./routes/authorship";
 
 export interface AppDeps {
   prisma: PrismaClient;
@@ -110,6 +111,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(projectRoutes(ctx), { prefix: "/projects" });
   await app.register(fileRoutes(ctx));
   await app.register(meRoutes(ctx));
+  await app.register(authorshipRoutes(ctx));
   await app.register(shareLinkRoutes(ctx));
   await app.register(collabRoutes(ctx, { secret: deps.collabSecret, publicUrl: deps.collabPublicUrl }));
 

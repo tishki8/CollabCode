@@ -183,24 +183,34 @@ model DocSnapshot {
   updatedAt DateTime @updatedAt
 }
 
+// Event log: one row per BATCH of changes by one user (see apps/collab/src/authorship). It is both
+// the history of the file and the attribution record: the rows say which user first delivered
+// which Yjs item range (clientId, clockStart..clockEnd). Attribution is always the server's
+// authenticated identity, never anything the client claims.
 model DocEvent {
-  id         BigInt   @id @default(autoincrement())
-  fileId     String
-  userId     String
-  clientId   BigInt
-  clockStart Int
-  clockEnd   Int
-  update     Bytes
-  added      Int
-  removed    Int
-  origin     String   @default("edit") // "edit" | "suggestion-accept" | "restore"
-  createdAt  DateTime @default(now())
+  id           BigInt   @id @default(autoincrement())
+  fileId       String
+  userId       String
+  clientId     BigInt // Yjs clientID that owns the inserted items (0 for delete-only batches with no known id)
+  clockStart   Int // inserted items: clockStart <= clock < clockEnd (equal = nothing inserted)
+  clockEnd     Int
+  update       Bytes // the batch's Yjs updates merged into one (replayable)
+  added        Int // characters inserted
+  removed      Int // characters removed
+  linesAdded   Int      @default(0) // newline characters inserted
+  linesRemoved Int      @default(0) // newline characters removed
+  origin       String   @default("edit") // "edit" | "suggestion-accept" | "restore"
+  startedAt    DateTime @default(now()) // server time of the batch's first change
+  createdAt    DateTime @default(now()) // server time of the batch's last change
 
+  @@index([fileId, id])
   @@index([fileId, createdAt])
   @@index([fileId, clientId, clockStart])
   @@index([userId, createdAt])
 }
 
+// Which user owns each Yjs clientID in a file: the first authenticated user whose connection used
+// it. Updates that introduce new items under someone else's clientID are rejected.
 model YClient {
   fileId    String
   clientId  BigInt

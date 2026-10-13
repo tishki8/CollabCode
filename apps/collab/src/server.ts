@@ -1,9 +1,10 @@
-import { Server } from "@hocuspocus/server";
+import { Server, type Extension } from "@hocuspocus/server";
 import { Database } from "@hocuspocus/extension-database";
 import { Redis } from "@hocuspocus/extension-redis";
 import type { PrismaClient } from "@collabcode/db";
 import { authorize, sanitizeAwarenessState, type ConnContext } from "./auth";
 import { createPersistence } from "./persistence";
+import { createAuthorshipExtension } from "./authorship/extension";
 
 export interface CollabOptions {
   prisma: PrismaClient;
@@ -13,16 +14,19 @@ export interface CollabOptions {
   port?: number;
   /** Debounce for writing snapshots, in ms. */
   debounce?: number;
+  /** How long authorship events are batched (defaults: 1.5 s idle, 5 s at most). */
+  authorship?: { idleMs?: number; maxMs?: number };
 }
 
 export function createCollabServer(opts: CollabOptions) {
-  const extensions: (Database | Redis)[] = [new Database(createPersistence(opts.prisma))];
+  const { extension: authorship, tracker } = createAuthorshipExtension(opts.prisma, opts.authorship);
+  const extensions: Extension[] = [authorship, new Database(createPersistence(opts.prisma))];
   if (opts.redisUrl) {
     const url = new URL(opts.redisUrl);
     extensions.push(new Redis({ host: url.hostname, port: Number(url.port || 6379), prefix: "collabcode" }));
   }
 
-  return new Server<ConnContext>({
+  const server = new Server<ConnContext>({
     port: opts.port ?? 1234,
     address: "0.0.0.0",
     quiet: true,
@@ -60,4 +64,7 @@ export function createCollabServer(opts: CollabOptions) {
       }
     },
   });
+
+  // Exposed for tests and diagnostics.
+  return Object.assign(server, { authorship: tracker });
 }

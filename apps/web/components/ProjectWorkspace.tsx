@@ -6,6 +6,8 @@ import { LANGUAGE_INFO, can, type FileNodeDto, type ProjectDetail } from "@colla
 import { FileTree } from "./FileTree";
 import { PresencePanel } from "./PresencePanel";
 import { SharePanel } from "./SharePanel";
+import { HistoryPanel } from "./HistoryPanel";
+import { ContributionsPanel } from "./ContributionsPanel";
 import { pathOfNode } from "@/lib/tree-path";
 
 // Monaco only works in the browser.
@@ -26,6 +28,13 @@ function initialFileId(project: ProjectDetail, nodes: FileNodeDto[], wanted: str
   );
 }
 
+type Tab = "editor" | "history" | "contributions";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "editor", label: "Editor" },
+  { id: "history", label: "History" },
+  { id: "contributions", label: "Contributions" },
+];
+
 export function ProjectWorkspace({
   project,
   currentUserId,
@@ -41,6 +50,13 @@ export function ProjectWorkspace({
   const [nodes, setNodes] = useState(initialNodes);
   const [activeFileId, setActiveFileId] = useState<string | null>(() => initialFileId(project, initialNodes, requestedFileId));
   const active = nodes.find((n) => n.id === activeFileId && n.type === "FILE") ?? null;
+  const [tab, setTab] = useState<Tab>("editor");
+  // Panels are created the first time they are opened, then kept (the editor must stay connected).
+  const [opened, setOpened] = useState<Set<Tab>>(new Set(["editor"]));
+  const show = (t: Tab) => {
+    setTab(t);
+    setOpened((o) => new Set(o).add(t));
+  };
 
   const openFile = useCallback((n: FileNodeDto) => {
     setActiveFileId(n.id);
@@ -81,13 +97,48 @@ export function ProjectWorkspace({
         />
         <PresencePanel projectId={project.id} currentUserId={currentUserId} activeFileId={active?.id ?? null} nodes={nodes} />
       </aside>
-      <section aria-label="Editor" className="min-w-0">
-        {active ? (
-          <CollabEditor key={active.id} projectId={project.id} fileId={active.id} fileName={active.name} />
-        ) : (
-          <p className="flex h-full items-center justify-center p-6 text-slate-600 dark:text-slate-400">
-            Select a file to start editing.
-          </p>
+      <section aria-label="Workspace" className="flex min-h-0 min-w-0 flex-col">
+        <div role="tablist" aria-label="Views" className="flex gap-1 border-b border-slate-200 px-3 pt-2 dark:border-slate-800">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              id={`tab-${t.id}`}
+              aria-selected={tab === t.id}
+              aria-controls={`panel-${t.id}`}
+              onClick={() => show(t.id)}
+              data-testid={`tab-${t.id}`}
+              className={`rounded-t px-3 py-1.5 text-sm ${
+                tab === t.id ? "border border-b-0 border-slate-300 bg-white font-semibold dark:border-slate-700 dark:bg-slate-950" : "text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-900"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div id="panel-editor" role="tabpanel" aria-labelledby="tab-editor" hidden={tab !== "editor"} className="min-h-0 flex-1">
+          {active ? (
+            <CollabEditor key={active.id} projectId={project.id} fileId={active.id} fileName={active.name} />
+          ) : (
+            <p className="flex h-full items-center justify-center p-6 text-slate-600 dark:text-slate-400">Select a file to start editing.</p>
+          )}
+        </div>
+
+        {opened.has("history") && (
+          <div id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden={tab !== "history"} className="min-h-0 flex-1">
+            {active ? (
+              <HistoryPanel key={active.id} projectId={project.id} fileId={active.id} fileName={active.name} />
+            ) : (
+              <p className="p-6 text-slate-600 dark:text-slate-400">Select a file to see its history.</p>
+            )}
+          </div>
+        )}
+
+        {opened.has("contributions") && (
+          <div id="panel-contributions" role="tabpanel" aria-labelledby="tab-contributions" hidden={tab !== "contributions"} className="min-h-0 flex-1">
+            <ContributionsPanel projectId={project.id} />
+          </div>
         )}
       </section>
     </main>
